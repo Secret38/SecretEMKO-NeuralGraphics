@@ -3,7 +3,7 @@ name: Build Secret EMKO v2 RenoDX
 on:
   workflow_dispatch:
   push:
-    branches: [ main, harden-universal-installer ]
+    branches: [ main ]
     paths:
       - "v2/**"
       - ".github/workflows/build-v2-renodx.yml"
