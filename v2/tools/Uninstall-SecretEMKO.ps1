@@ -85,11 +85,6 @@ function Resolve-PluginsPath {
         return (Join-Path $app "plugins")
     }
 
-    $default = Join-Path $env:LOCALAPPDATA "FiveM\FiveM.app"
-    if (Test-FiveMAppPath $default) {
-        return (Join-Path $default "plugins")
-    }
-
     if (Test-Path -LiteralPath $GlobalStateRoot) {
         $states = @(Get-ChildItem -LiteralPath $GlobalStateRoot -Filter "install-state-*.json" -File -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTimeUtc -Descending)
@@ -101,6 +96,11 @@ function Resolve-PluginsPath {
                 }
             } catch {}
         }
+    }
+
+    $default = Join-Path $env:LOCALAPPDATA "FiveM\FiveM.app"
+    if (Test-FiveMAppPath $default) {
+        return (Join-Path $default "plugins")
     }
 
     $picked = Select-FiveMInteractively
