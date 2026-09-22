@@ -297,8 +297,8 @@ function Install-ReShadeHeadless([string]$Directory, [bool]$FullAddon) {
 
     $hostSource = Join-Path $env:WINDIR "System32\notepad.exe"
     if (-not (Test-Path -LiteralPath $hostSource)) { throw "Could not locate a 64-bit Windows host executable for ReShade setup." }
-    $host = Join-Path $Directory "_SecretEMKO_ReShadeHost.exe"
-    Copy-Item -LiteralPath $hostSource -Destination $host -Force
+    $targetExe = Join-Path $Directory "_SecretEMKO_ReShadeHost.exe"
+    Copy-Item -LiteralPath $hostSource -Destination $targetExe -Force
 
     try {
         $label = if ($FullAddon) { "Full Add-on Support" } else { "standard signed build" }
@@ -311,7 +311,7 @@ function Install-ReShadeHeadless([string]$Directory, [bool]$FullAddon) {
         }
         [void]$args.Add("--api")
         [void]$args.Add("dxgi")
-        [void]$args.Add($host)
+        [void]$args.Add($targetExe)
 
         $proc = Start-Process -FilePath $setup -ArgumentList @($args) -Wait -PassThru
         if ($proc.ExitCode -ne 0) {
@@ -319,7 +319,7 @@ function Install-ReShadeHeadless([string]$Directory, [bool]$FullAddon) {
         }
     }
     finally {
-        Remove-Item -LiteralPath $host -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $targetExe -Force -ErrorAction SilentlyContinue
     }
 
     $actual = Get-ReShadeMode $Directory

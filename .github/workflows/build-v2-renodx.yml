@@ -71,10 +71,10 @@ jobs:
           Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $setup
           $target = Join-Path $env:RUNNER_TEMP "SecretEmkoFullAddon"
           New-Item -ItemType Directory -Path $target -Force | Out-Null
-          $host = Join-Path $target "_SecretEMKO_ReShadeHost.exe"
-          Copy-Item "$env:WINDIR\System32\notepad.exe" $host -Force
-          $p = Start-Process -FilePath $setup -ArgumentList @("--headless","--api","dxgi",$host) -Wait -PassThru
-          Remove-Item $host -Force -ErrorAction SilentlyContinue
+          $targetExe = Join-Path $target "_SecretEMKO_ReShadeHost.exe"
+          Copy-Item "$env:WINDIR\System32\notepad.exe" $targetExe -Force
+          $p = Start-Process -FilePath $setup -ArgumentList @("--headless","--api","dxgi",$targetExe) -Wait -PassThru
+          Remove-Item $targetExe -Force -ErrorAction SilentlyContinue
           if ($p.ExitCode -ne 0) { throw "Full Add-on setup failed with $($p.ExitCode)" }
           $dll = Join-Path $target "dxgi.dll"
           if (-not (Test-Path $dll)) { throw "Full Add-on dxgi.dll missing" }
