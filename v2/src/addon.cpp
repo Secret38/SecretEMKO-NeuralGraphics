@@ -514,7 +514,7 @@ void DrawQuality() {
   changed |= Slider("Colour Strength", &g_nr.color_strength, 0.0f, 2.0f, "Chroma contribution. Enhanced uses 0.95 to avoid oversaturated fine detail; values above 1.0 are intentionally available for advanced tuning.");
 
   changed |= Slider("Scene Paper-White Scale", &g_nr.paper_white_scale, 0.25f, 4.0f, "Use 1.0 for FiveM SDR. This exists mainly for HDR contracts.");
-  changed |= Slider("Diffuse White", &g_nr.diffuse_white_nits, 80.0f, 500.0f, "v4.7 HDR diffuse-white reference. It is effectively informational for a normal SDR FiveM contract.", "%.0f nits");
+  changed |= Slider("Diffuse White", &g_nr.diffuse_white_nits, 80.0f, 500.0f, "HDR diffuse-white reference exposed by the consumer. It is mostly informational for a normal SDR FiveM contract.", "%.0f nits");
 
   ImGui::Spacing();
   ImGui::SeparatorText("Geometry guidance");
