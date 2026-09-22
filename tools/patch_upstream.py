@@ -7,12 +7,11 @@ BUILDS = [1604,2060,2189,2372,2545,2612,2699,2802,2944,3095,3258,3407,3570,3717,
 
 def _encoding(path):
     data = path.read_bytes()[:4]
-    if data.startswith(b"\\xff\\xfe") or data.startswith(b"\\xfe\\xff"):
+    if data.startswith(bytes([0xff, 0xfe])) or data.startswith(bytes([0xfe, 0xff])):
         return "utf-16"
-    if data.startswith(b"\\xef\\xbb\\xbf"):
+    if data.startswith(bytes([0xef, 0xbb, 0xbf])):
         return "utf-8-sig"
     return "utf-8"
-
 def read(rel):
     p = ROOT / rel
     return p.read_text(encoding=_encoding(p))
