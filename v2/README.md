@@ -4,6 +4,8 @@ RC2 is the hardened **FiveM GTA V Legacy x64** distribution. The key change is t
 
 ## Install
 
+> **Do not use GitHub `Code -> Download ZIP` for Full Neural.** The source archive does not contain the compiled `SecretEMKO.addon64` or packaged bridge. Download the successful GitHub Actions artifact `SecretEMKO-NeuralGraphics-v2.0.0-rc2`, extract it completely, and run the installer from that extracted package.
+
 For normal FiveM RP use, double-click:
 
 ```bat
