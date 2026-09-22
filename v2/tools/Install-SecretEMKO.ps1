@@ -158,6 +158,18 @@ Banner
 $running = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -like "FiveM*" -or $_.ProcessName -like "GTAProcess*" })
 if ($running.Count -gt 0) { throw "Close FiveM/GTA before installing SECRET EMKO." }
 
+$gpu = Get-GpuProfile
+Step "Hardware profile"
+Write-Host "   GPU: $($gpu.Description)"
+$ResolvedMode = $Mode
+if ($Mode -eq "Auto") { $ResolvedMode = if ($gpu.Rtx50) { "FullNeural" } else { "VisualOnly" } }
+if ($ResolvedMode -eq "FullNeural" -and -not $gpu.Rtx50 -and -not $Force) {
+    throw "FullNeural is validated for RTX 50-class hardware in this release. Use -Mode VisualOnly, or -Force only for deliberate testing."
+}
+if ($ResolvedMode -eq "FullNeural") { Confirm-FullAddonRisk }
+Ok "Install mode: $ResolvedMode"
+$CoreVariant = if ($ResolvedMode -eq "FullNeural") { "Addon" } else { "Standard" }
+
 $prepareTool = Join-Path $ToolRoot "Prepare-FiveMPlugins.ps1"
 if (-not (Test-Path -LiteralPath $prepareTool)) { throw "Missing installer component: $prepareTool" }
 
@@ -168,57 +180,53 @@ $script:PluginsPath = [string]$layout.plugins_path
 $FiveMAppRoot = [string]$layout.fivem_app_root
 $OriginalPluginsBackup = [string]$layout.original_plugins_backup_path
 
-if ($layout.isolated_existing_plugins) {
-    Ok "Existing plugins preserved without modification"
-    Write-Host "      $OriginalPluginsBackup"
-}
-elseif ($layout.existing_secret_emko) { Ok "Existing SECRET EMKO installation detected; updating in place" }
-else { Ok "Clean plugins directory ready: $script:PluginsPath" }
-
-Test-FreeSpace $script:PluginsPath 2GB
-Ensure-Folder $Cache
-
-$StateDir = Join-Path $script:PluginsPath "SecretEMKO"
-$Backup = Join-Path $StateDir "backups\$Stamp"
-$LicenseDir = Join-Path $StateDir "licenses"
-Ensure-Folder $StateDir; Ensure-Folder $LicenseDir
-
-$gpu = Get-GpuProfile
-Step "Hardware profile"
-Write-Host "   GPU: $($gpu.Description)"
-$ResolvedMode = $Mode
-if ($Mode -eq "Auto") {
-    $ResolvedMode = if ($gpu.Rtx50) { "FullNeural" } else { "VisualOnly" }
-}
-if ($ResolvedMode -eq "FullNeural" -and -not $gpu.Rtx50 -and -not $Force) {
-    throw "FullNeural is validated for RTX 50-class hardware in this release. Use -Mode VisualOnly, or -Force only for deliberate testing."
-}
-if ($ResolvedMode -eq "FullNeural") { Confirm-FullAddonRisk }
-Ok "Install mode: $ResolvedMode"
-
-$CoreVariant = if ($ResolvedMode -eq "FullNeural") { "Addon" } else { "Standard" }
-
-# If an old plugins directory was isolated, reuse only a matching official ReShade module.
-if ($OriginalPluginsBackup -and (Test-Path -LiteralPath $OriginalPluginsBackup)) {
-    $legacyDxgi = Join-Path $OriginalPluginsBackup "dxgi.dll"
-    if (Test-ReShadeVariant $legacyDxgi $CoreVariant) {
-        Copy-Item -LiteralPath $legacyDxgi -Destination (Join-Path $script:PluginsPath "dxgi.dll") -Force
-        Ok "Reused compatible ReShade $CoreVariant module from preserved plugins"
+function Restore-CleanRoomOnFailure {
+    if ($layout.isolated_existing_plugins -and $OriginalPluginsBackup -and (Test-Path -LiteralPath $OriginalPluginsBackup)) {
+        $failed = Join-Path $FiveMAppRoot ("plugins.SecretEMKO-failed-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+        if (Test-Path -LiteralPath $script:PluginsPath) { Move-Item -LiteralPath $script:PluginsPath -Destination $failed -Force }
+        Move-Item -LiteralPath $OriginalPluginsBackup -Destination $script:PluginsPath -Force
+        Warn "Installation failed; original plugins were automatically restored."
+        Warn "Incomplete SECRET EMKO files were preserved at: $failed"
     }
 }
 
-$reshadeTool = Join-Path $ToolRoot "Update-ReShadeContent.ps1"
-Step "Installing ReShade core, presets and shader content"
-$reshadeArgs = @{
-    TargetDirectory = $script:PluginsPath
-    Architecture = "64"
-    CoreVariant = $CoreVariant
-}
-if ($OriginalPluginsBackup) { $reshadeArgs.LegacyContentRoot = $OriginalPluginsBackup }
-if ($ResolvedMode -eq "VisualOnly") { $reshadeArgs.SkipAddon = $true }
-& $reshadeTool @reshadeArgs
-
 try {
+    if ($layout.isolated_existing_plugins) {
+        Ok "Existing plugins preserved without modification"
+        Write-Host "      $OriginalPluginsBackup"
+    }
+    elseif ($layout.existing_secret_emko) { Ok "Existing SECRET EMKO installation detected; updating in place" }
+    else { Ok "Clean plugins directory ready: $script:PluginsPath" }
+
+    Test-FreeSpace $script:PluginsPath 2GB
+    Ensure-Folder $Cache
+
+    $StateDir = Join-Path $script:PluginsPath "SecretEMKO"
+    $Backup = Join-Path $StateDir "backups\$Stamp"
+    $LicenseDir = Join-Path $StateDir "licenses"
+    Ensure-Folder $StateDir
+    Ensure-Folder $LicenseDir
+
+    # If an old plugins directory was isolated, reuse only a matching official ReShade module.
+    if ($OriginalPluginsBackup -and (Test-Path -LiteralPath $OriginalPluginsBackup)) {
+        $legacyDxgi = Join-Path $OriginalPluginsBackup "dxgi.dll"
+        if (Test-ReShadeVariant $legacyDxgi $CoreVariant) {
+            Copy-Item -LiteralPath $legacyDxgi -Destination (Join-Path $script:PluginsPath "dxgi.dll") -Force
+            Ok "Reused compatible ReShade $CoreVariant module from preserved plugins"
+        }
+    }
+
+    $reshadeTool = Join-Path $ToolRoot "Update-ReShadeContent.ps1"
+    Step "Installing ReShade core, presets and shader content"
+    $reshadeArgs = @{
+        TargetDirectory = $script:PluginsPath
+        Architecture = "64"
+        CoreVariant = $CoreVariant
+    }
+    if ($OriginalPluginsBackup) { $reshadeArgs.LegacyContentRoot = $OriginalPluginsBackup }
+    if ($ResolvedMode -eq "VisualOnly") { $reshadeArgs.SkipAddon = $true }
+    & $reshadeTool @reshadeArgs
+
     if ($ResolvedMode -eq "FullNeural") {
         Step "Installing SECRET EMKO neural add-ons"
         Copy-Managed (Join-Path $Root "SecretEMKO.addon64") "SecretEMKO.addon64"
@@ -231,23 +239,27 @@ try {
         Step "Downloading verified neural runtimes"
         $renodxZip = Join-Path $Cache "renodx-dlss5_4.70.zip"
         Download-Verified $Urls.RenoDX $renodxZip $Hashes.RenoDX
-        $renodxExtract = Join-Path $Cache "renodx-dlss5_4.70"; Expand-Fresh $renodxZip $renodxExtract
+        $renodxExtract = Join-Path $Cache "renodx-dlss5_4.70"
+        Expand-Fresh $renodxZip $renodxExtract
         Copy-Managed (Find-RequiredFile $renodxExtract "renodx-dlss5*.addon64") "renodx-dlss5.addon64"
 
         $nrZip = Join-Path $Cache "nvngx_dlssnr_310.8.0.zip"
         Download-Verified $Urls.DlssNr $nrZip $Hashes.DlssNr
-        $nrExtract = Join-Path $Cache "nvngx_dlssnr_310.8.0"; Expand-Fresh $nrZip $nrExtract
+        $nrExtract = Join-Path $Cache "nvngx_dlssnr_310.8.0"
+        Expand-Fresh $nrZip $nrExtract
         Copy-Managed (Find-RequiredFile $nrExtract "nvngx_dlssnr.dll" $Rtx50NrDllHash) "nvngx_dlssnr.dll"
 
         $srZip = Join-Path $Cache "nvngx_dlss_310.9.1.zip"
         Download-Verified $Urls.DlssSr $srZip $Hashes.DlssSr
-        $srExtract = Join-Path $Cache "nvngx_dlss_310.9.1"; Expand-Fresh $srZip $srExtract
+        $srExtract = Join-Path $Cache "nvngx_dlss_310.9.1"
+        Expand-Fresh $srZip $srExtract
         Copy-Managed (Find-RequiredFile $srExtract "nvngx_dlss.dll") "nvngx_dlss.dll"
 
         if (-not $SkipStreamline) {
             $slZip = Join-Path $Cache "streamline-sdk-v2.14.1.zip"
             Download-Verified $Urls.Streamline $slZip $Hashes.Streamline
-            $slExtract = Join-Path $Cache "streamline-sdk-v2.14.1"; Expand-Fresh $slZip $slExtract
+            $slExtract = Join-Path $Cache "streamline-sdk-v2.14.1"
+            Expand-Fresh $slZip $slExtract
             foreach ($name in @("sl.interposer.dll","sl.common.dll","sl.dlss.dll","sl.dlss_g.dll","sl.dlss_nr.dll","sl.reflex.dll","sl.pcl.dll","sl.nis.dll","nvngx_dlssg.dll")) {
                 Copy-OptionalStreamlineFile $slExtract $name
             }
@@ -262,6 +274,7 @@ try {
             @("NRDiffuseWhiteNits","203"), @("NRPaperWhiteScale","1.0"), @("NRTransferStrength","1.0"),
             @("NRColorStrength","0.95"), @("NRDepthMode","0"), @("NRMVecScaleX","1.0"), @("NRMVecScaleY","1.0")
         )) { Set-IniValue $reshadeIni "RenoDX.DLSS5" $kv[0] $kv[1] }
+
         Set-IniValue $reshadeIni "SecretEMKO" "Profile" "3"
         Set-IniValue $reshadeIni "SecretEMKO" "FrameGenerationPolicy" "0"
         Copy-Item -LiteralPath (Join-Path $Root "config\dlss5-bridge.cfg") -Destination (Join-Path $script:PluginsPath "dlss5-bridge.cfg") -Force
@@ -297,7 +310,9 @@ try {
 
     Step "Verification"
     $required = @("dxgi.dll","ReShade.ini","Secret_Emko_Main.ini","Secret_Emko_Stream.ini")
-    if ($ResolvedMode -eq "FullNeural") { $required += @("SecretEMKO.addon64","dlss5-bridge.addon64","renodx-dlss5.addon64","nvngx_dlssnr.dll","nvngx_dlss.dll","swapchain_override.addon64") }
+    if ($ResolvedMode -eq "FullNeural") {
+        $required += @("SecretEMKO.addon64","dlss5-bridge.addon64","renodx-dlss5.addon64","nvngx_dlssnr.dll","nvngx_dlss.dll","swapchain_override.addon64")
+    }
     $missing = @()
     foreach ($name in $required) {
         $p = Join-Path $script:PluginsPath $name
@@ -307,14 +322,7 @@ try {
     if ($missing.Count -gt 0) { throw "Installation incomplete: $($missing -join ', ')" }
 }
 catch {
-    # First-install clean-room transaction: restore the user's original plugins folder on fatal failure.
-    if ($layout.isolated_existing_plugins -and $OriginalPluginsBackup -and (Test-Path -LiteralPath $OriginalPluginsBackup)) {
-        $failed = Join-Path $FiveMAppRoot ("plugins.SecretEMKO-failed-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
-        if (Test-Path -LiteralPath $script:PluginsPath) { Move-Item -LiteralPath $script:PluginsPath -Destination $failed -Force }
-        Move-Item -LiteralPath $OriginalPluginsBackup -Destination $script:PluginsPath -Force
-        Warn "Installation failed; original plugins were automatically restored."
-        Warn "Incomplete SECRET EMKO files were preserved at: $failed"
-    }
+    Restore-CleanRoomOnFailure
     throw
 }
 
