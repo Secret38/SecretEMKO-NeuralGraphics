@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$WorkDir = "$PSScriptRoot\..\work-v2"
+    [string]$WorkDir = "$PSScriptRoot\..\work-v2",
+    [string]$RenoDXRef = "origin/main"
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,7 +10,6 @@ $ProgressPreference = "SilentlyContinue"
 
 $RepoRoot = (Resolve-Path "$PSScriptRoot\..").Path
 $Upstream = "https://github.com/clshortfuse/renodx.git"
-$Commit = "9b212edad4dde9bca2b823b1e045b712b1a8d854"
 $BridgeUrl = "https://github.com/NIGos/dlss5-bridge/releases/download/v1.4.12/dlss5-bridge.addon64"
 $BridgeHash = "4F2ACECC1026AE89AC0B92767BE66CEEA2662AD0EF88710B89C7DA7840D548D4"
 
@@ -22,8 +22,10 @@ if ($LASTEXITCODE -ne 0) { throw "RenoDX clone failed" }
 
 Push-Location $src
 try {
-    & git checkout --detach $Commit
-    if ($LASTEXITCODE -ne 0) { throw "RenoDX checkout failed" }
+    & git checkout --detach $RenoDXRef
+    if ($LASTEXITCODE -ne 0) { throw "RenoDX checkout failed: $RenoDXRef" }
+    $Commit = (& git rev-parse HEAD).Trim()
+    if (-not $Commit) { throw "Could not resolve RenoDX commit" }
     & git submodule update --init --recursive
     if ($LASTEXITCODE -ne 0) { throw "RenoDX submodule update failed" }
 }
@@ -53,7 +55,7 @@ $built = Get-ChildItem -LiteralPath $buildDir -Recurse -File -Filter "renodx-sec
 if (-not $built) { throw "renodx-secretemko.addon64 not found after build" }
 
 $distRoot = Join-Path $RepoRoot "dist"
-$stage = Join-Path $distRoot "SecretEMKO-NeuralGraphics-v2.0.0-preview1"
+$stage = Join-Path $distRoot "SecretEMKO-NeuralGraphics-v2.0.0-rc1"
 $zip = "$stage.zip"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 if (Test-Path $zip) { Remove-Item $zip -Force }
@@ -61,6 +63,7 @@ New-Item -ItemType Directory -Path $stage -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $stage "tools") -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $stage "config") -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $stage "licenses") -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $stage "presets") -Force | Out-Null
 
 Copy-Item $built.FullName (Join-Path $stage "SecretEMKO.addon64") -Force
 
@@ -78,6 +81,11 @@ Copy-Item (Join-Path $RepoRoot "LICENSE") (Join-Path $stage "LICENSE") -Force
 Copy-Item (Join-Path $RepoRoot "THIRD_PARTY_NOTICES.md") (Join-Path $stage "THIRD_PARTY_NOTICES.md") -Force
 Copy-Item (Join-Path $RepoRoot "config\dlss5-bridge.cfg") (Join-Path $stage "config\dlss5-bridge.cfg") -Force
 Copy-Item (Join-Path $RepoRoot "tools\Install-SecretEMKO.ps1") (Join-Path $stage "tools\Install-SecretEMKO.ps1") -Force
+Copy-Item (Join-Path $RepoRoot "tools\Update-ReShadeContent.ps1") (Join-Path $stage "tools\Update-ReShadeContent.ps1") -Force
+Copy-Item (Join-Path $RepoRoot "config\ReShade.SecretEMKO.ini") (Join-Path $stage "config\ReShade.SecretEMKO.ini") -Force
+Copy-Item (Join-Path $RepoRoot "presets\Secret_Emko_Main.ini") (Join-Path $stage "presets\Secret_Emko_Main.ini") -Force
+Copy-Item (Join-Path $RepoRoot "presets\Secret_Emko_Stream.ini") (Join-Path $stage "presets\Secret_Emko_Stream.ini") -Force
+Copy-Item (Join-Path $RepoRoot "MAIN-SYSTEM.json") (Join-Path $stage "MAIN-SYSTEM.json") -Force
 Copy-Item (Join-Path $RepoRoot "tools\Uninstall-SecretEMKO.ps1") (Join-Path $stage "tools\Uninstall-SecretEMKO.ps1") -Force
 Copy-Item (Join-Path $RepoRoot "INSTALL_SECRET_EMKO.bat") (Join-Path $stage "INSTALL_SECRET_EMKO.bat") -Force
 Copy-Item (Join-Path $RepoRoot "UNINSTALL_SECRET_EMKO.bat") (Join-Path $stage "UNINSTALL_SECRET_EMKO.bat") -Force
@@ -94,7 +102,7 @@ Copy-Item $reshadeLicense (Join-Path $stage "licenses\ReShade-LICENSE.md") -Forc
 
 $manifest = [ordered]@{
     product = "SECRET EMKO Neural Graphics"
-    version = "2.0.0-preview1"
+    version = "2.0.0-rc1"
     built = (Get-Date).ToUniversalTime().ToString("o")
     renodx_commit = $Commit
     bridge_version = "1.4.12"

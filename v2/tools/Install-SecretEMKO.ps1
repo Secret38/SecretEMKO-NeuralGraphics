@@ -23,7 +23,6 @@ $Urls = @{
     DlssNr = "https://github.com/RankFTW/rhi-repo/releases/download/dlssnr-310.8.0/nvngx_dlssnr_310.8.0.zip"
     DlssSr = "https://github.com/RankFTW/rhi-repo/releases/download/dlss-310.9.1/nvngx_dlss_310.9.1.zip"
     Streamline = "https://github.com/NVIDIA-RTX/Streamline/releases/download/v2.14.1/streamline-sdk-v2.14.1.zip"
-    ReShade = "https://reshade.me/downloads/ReShade_Setup_6.8.0_Addon.exe"
 }
 $Hashes = @{
     RenoDX = "D6E356D01B429AF6288F488A4926C44F1D779A7D4586EE8C79D04D3A09A536E6"
@@ -172,23 +171,24 @@ Ensure-Folder $LicenseDir
 
 Step "Checking ReShade"
 $reshade = Join-Path $PluginsPath "dxgi.dll"
-if (-not (Test-Path -LiteralPath $reshade)) {
-    $setup = Join-Path $Cache "ReShade_Setup_6.8.0_Addon.exe"
-    Warn "No plugins\dxgi.dll was found. SECRET EMKO requires ReShade 6.8+ Full Add-on Support."
-    Write-Host "   The official installer will be downloaded and opened. Install ReShade Full Add-on Support for FiveM, then run this installer again."
-    Invoke-WebRequest -UseBasicParsing -Uri $Urls.ReShade -OutFile $setup
+$reshadeValid = $false
+if (Test-Path -LiteralPath $reshade) {
+    $reshadeBytes = [IO.File]::ReadAllBytes($reshade)
+    $reshadeAscii = [Text.Encoding]::ASCII.GetString($reshadeBytes)
+    $reshadeValid = $reshadeAscii.Contains("ReShadeRegisterAddon")
+}
+if (-not $reshadeValid) {
+    $home = Invoke-WebRequest -UseBasicParsing -Uri "https://reshade.me/"
+    if ($home.Content -notmatch 'Version\s+([0-9]+\.[0-9]+\.[0-9]+)') {
+        throw "Could not resolve current ReShade version from reshade.me."
+    }
+    $reshadeVersion = $Matches[1]
+    $setup = Join-Path $Cache ("ReShade_Setup_" + $reshadeVersion + "_Addon.exe")
+    $reshadeUrl = "https://reshade.me/downloads/ReShade_Setup_$($reshadeVersion)_Addon.exe"
+    Warn "SECRET EMKO requires ReShade Full Add-on Support. The current official installer will be opened."
+    Invoke-WebRequest -UseBasicParsing -Uri $reshadeUrl -OutFile $setup
     Start-Process -FilePath $setup
     exit 2
-}
-$reshadeBytes = [IO.File]::ReadAllBytes($reshade)
-$reshadeAscii = [Text.Encoding]::ASCII.GetString($reshadeBytes)
-if (-not $reshadeAscii.Contains("ReShadeRegisterAddon")) {
-    $setup = Join-Path $Cache "ReShade_Setup_6.8.0_Addon.exe"
-    Warn "The existing dxgi.dll does not expose ReShadeRegisterAddon and appears to be the standard build."
-    Write-Host "   SECRET EMKO requires ReShade Full Add-on Support. The official installer will be opened; install the Add-on build and then run SECRET EMKO again."
-    Invoke-WebRequest -UseBasicParsing -Uri $Urls.ReShade -OutFile $setup
-    Start-Process -FilePath $setup
-    exit 3
 }
 Ok "Existing ReShade Full Add-on Support dxgi.dll preserved"
 
@@ -290,6 +290,17 @@ Set-IniValue $reshadeIni "SecretEMKO" "FrameGenerationPolicy" "0"
 Copy-Item -LiteralPath (Join-Path $Root "config\dlss5-bridge.cfg") -Destination $bridgeCfg -Force
 Ok "Enhanced profile + synthetic D3D11 bridge configured"
 
+Step "Installing/updating integrated ReShade presets, shaders and official add-ons"
+$reshadeContentTool = Join-Path $Root "tools\Update-ReShadeContent.ps1"
+if (-not (Test-Path -LiteralPath $reshadeContentTool)) {
+    throw "Missing integrated ReShade updater: $reshadeContentTool"
+}
+& $reshadeContentTool -TargetDirectory $PluginsPath -Architecture 64
+if ($LASTEXITCODE -ne 0) {
+    throw "Integrated ReShade updater failed with exit code $LASTEXITCODE"
+}
+Ok "ReShade Main/Stream content updated"
+
 Step "Writing install state"
 $managed = @(
     "SecretEMKO.addon64",
@@ -306,11 +317,14 @@ $managed = @(
     "sl.pcl.dll",
     "sl.nis.dll",
     "nvngx_dlssg.dll",
-    "dlss5-bridge.cfg"
+    "dlss5-bridge.cfg",
+    "swapchain_override.addon64",
+    "Secret_Emko_Main.ini",
+    "Secret_Emko_Stream.ini"
 )
 $state = [ordered]@{
     product = "SECRET EMKO Neural Graphics"
-    version = "2.0.0-preview1"
+    version = "2.0.0-rc1"
     installed_at = (Get-Date).ToString("o")
     plugins_path = $PluginsPath
     backup_path = $Backup
@@ -328,7 +342,10 @@ $required = @(
     "nvngx_dlssnr.dll",
     "nvngx_dlss.dll",
     "ReShade.ini",
-    "dlss5-bridge.cfg"
+    "dlss5-bridge.cfg",
+    "swapchain_override.addon64",
+    "Secret_Emko_Main.ini",
+    "Secret_Emko_Stream.ini"
 )
 $missing = @()
 foreach ($name in $required) {
@@ -350,5 +367,5 @@ Write-Host " Start FiveM, open ReShade, then Add-ons -> SECRET EMKO Neural Graph
 Write-Host " Recommended first profile: Enhanced." -ForegroundColor White
 Write-Host ""
 Write-Host " Keep ReShade.log and dlss5-bridge.log after the first test." -ForegroundColor Gray
-Write-Host " Frame Generation is intentionally not armed in preview1." -ForegroundColor Yellow
+Write-Host " Frame Generation remains gated until the FiveM FG signal/pacing path is validated." -ForegroundColor Yellow
 Write-Host "===============================================================" -ForegroundColor DarkGray

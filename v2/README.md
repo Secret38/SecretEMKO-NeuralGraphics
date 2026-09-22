@@ -13,8 +13,8 @@ This is the clean v2 line for **FiveM GTA V Legacy x64**. It replaces the invasi
 
 ## Current stack
 
-- RenoDX framework main pinned to `9b212edad4dde9bca2b823b1e045b712b1a8d854`.
-- ReShade Full Add-on Support 6.8.0 or newer.
+- RenoDX public framework is built from the current upstream `origin/main`; the exact commit is recorded in each `BUILD-MANIFEST.json`.
+- ReShade Full Add-on Support 6.8.0+; when installation is required, the installer resolves the current official version from reshade.me.
 - NIGos DLSS 5 Bridge 1.4.12 stable.
 - RenoDX DLSS 5 consumer 4.70.
 - NVIDIA DLSS SR 310.9.1.
@@ -37,9 +37,13 @@ The installer targets:
 %LOCALAPPDATA%\FiveM\FiveM.app\plugins
 ```
 
-It preserves the existing ReShade `dxgi.dll`, backs up files it manages, installs the Secret EMKO/Bridge add-ons, downloads the pinned neural consumer and NVIDIA runtimes, writes GTA/FiveM bridge defaults, and verifies hashes.
+It preserves an existing compatible ReShade `dxgi.dll`, backs up managed configuration, installs the Secret EMKO/Bridge add-ons, downloads the pinned neural consumer and NVIDIA runtimes, writes GTA/FiveM bridge defaults, and verifies hashes.
 
-After installation, start FiveM and open ReShade. In **Add-ons**, choose **SECRET EMKO Neural Graphics** and start with **Enhanced**.
+The same installer then runs the integrated ReShade content manager. That manager reads ReShade's live official `EffectPackages.ini` and `Addons.ini`, installs the current shader packages needed by the shipped presets, installs the current official `swapchain_override` add-on, and merges portable relative paths into `ReShade.ini` instead of embedding a Windows username.
+
+After installation, start FiveM and open ReShade. In **Add-ons**, choose **SECRET EMKO Neural Graphics** and start with **Enhanced** for the neural profile.
+
+For post-processing, `Secret_Emko_Main.ini` is the default preset and `Secret_Emko_Stream.ini` is the lighter stream preset. Main retains the supplied QuantV configuration, but QuantV itself is not redistributed or downloaded from unofficial mirrors; if it is absent, the installer reports the missing external effect while still installing all official/public dependencies.
 
 ## Quality profiles
 
@@ -53,7 +57,7 @@ The current RenoDX DLSS 5 v4.7 core is single-pass. v2 therefore exposes **one r
 
 ## Frame Generation
 
-Streamline/DLSSG runtime files can be staged by the installer, but **FiveM Frame Generation is not armed in preview1**. A usable FG integration needs valid motion/depth/HUD-less colour, swapchain ownership and pacing. The UI shows readiness but intentionally does not claim FG is working from DLL presence alone. Product policy remains 2x/3x total maximum when a validated provider is added.
+Streamline/DLSSG runtime files can be staged by the installer, but **FiveM Frame Generation is still gated in rc1**. A usable FG integration needs valid motion/depth/HUD-less colour, swapchain ownership and pacing. The UI shows readiness but intentionally does not claim FG is working from DLL presence alone. Product policy remains 2x/3x total maximum when a validated provider is added.
 
 ## Multiplayer / depth
 
@@ -68,3 +72,8 @@ Keep these files after each test:
 - any FiveM crash dump
 
 The Secret EMKO Diagnostics tab shows which files are present and loaded.
+
+
+## Main-system update policy
+
+`MAIN-SYSTEM.json` is the machine-readable policy for the v2 main system. Public ReShade content follows the current official upstream catalogs. The public RenoDX framework follows upstream main at build time. Binary-sensitive DLSS/NR/Bridge runtime packages remain pinned and SHA-256 verified until a newer combination has been validated together. This prevents an automatic "latest" update from silently breaking the FiveM rendering chain.

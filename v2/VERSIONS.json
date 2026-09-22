@@ -1,16 +1,34 @@
 {
   "product": "SECRET EMKO Neural Graphics",
-  "version": "2.0.0-preview1",
+  "version": "2.0.0-rc1",
   "verified_on": "2026-09-22",
   "components": {
     "renodx_framework": {
       "repository": "clshortfuse/renodx",
-      "commit": "9b212edad4dde9bca2b823b1e045b712b1a8d854",
+      "ref": "origin/main",
+      "policy": "latest upstream main at build time; exact SHA recorded in BUILD-MANIFEST.json",
       "license": "MIT"
     },
     "reshade": {
-      "version": "6.8.0",
-      "distribution": "official Full Add-on Support installer; not redistributed"
+      "minimum_version": "6.8.0",
+      "policy": "latest official Full Add-on Support resolved from reshade.me at install time",
+      "distribution": "official installer; not redistributed"
+    },
+    "reshade_effects": {
+      "catalog": "crosire/reshade-shaders list/EffectPackages.ini",
+      "policy": "latest official packages required by shipped presets"
+    },
+    "reshade_addons": {
+      "catalog": "crosire/reshade-shaders list/Addons.ini",
+      "managed": [
+        "swapchain_override"
+      ],
+      "policy": "latest official catalog asset"
+    },
+    "presets": {
+      "default": "Secret_Emko_Main.ini",
+      "stream": "Secret_Emko_Stream.ini",
+      "note": "Main includes QuantV settings; QuantV itself is external/proprietary and is not downloaded from unofficial mirrors."
     },
     "dlss5_bridge": {
       "version": "1.4.12",
