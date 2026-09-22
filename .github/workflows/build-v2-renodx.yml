@@ -60,6 +60,27 @@ jobs:
             if (-not (Test-Path (Join-Path $target $name))) { throw "Missing ReShade integration output: $name" }
           }
 
+      - name: Validate official Full Add-on headless setup
+        shell: powershell
+        run: |
+          $home = Invoke-WebRequest -UseBasicParsing -Uri "https://reshade.me/"
+          if ($home.Content -notmatch 'Version\s+([0-9]+\.[0-9]+\.[0-9]+)') { throw "Could not resolve ReShade version" }
+          $version = $Matches[1]
+          $setup = Join-Path $env:RUNNER_TEMP ("ReShade_Setup_" + $version + "_Addon.exe")
+          $url = "https://reshade.me/downloads/ReShade_Setup_" + $version + "_Addon.exe"
+          Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $setup
+          $target = Join-Path $env:RUNNER_TEMP "SecretEmkoFullAddon"
+          New-Item -ItemType Directory -Path $target -Force | Out-Null
+          $host = Join-Path $target "_SecretEMKO_ReShadeHost.exe"
+          Copy-Item "$env:WINDIR\System32\notepad.exe" $host -Force
+          $p = Start-Process -FilePath $setup -ArgumentList @("--headless","--api","dxgi",$host) -Wait -PassThru
+          Remove-Item $host -Force -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) { throw "Full Add-on setup failed with $($p.ExitCode)" }
+          $dll = Join-Path $target "dxgi.dll"
+          if (-not (Test-Path $dll)) { throw "Full Add-on dxgi.dll missing" }
+          $ascii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($dll))
+          if ($ascii.Contains("only limited add-on functionality")) { throw "Expected Full Add-on build, detected limited standard build" }
+
       - name: Build RenoDX-native addon and package
         shell: powershell
         run: |
@@ -73,6 +94,7 @@ jobs:
             "SecretEMKO.addon64",
             "dlss5-bridge.addon64",
             "INSTALL_SECRET_EMKO.bat",
+            "INSTALL_SECRET_EMKO_FULL_NEURAL.bat",
             "UNINSTALL_SECRET_EMKO.bat",
             "tools\Install-SecretEMKO.ps1",
             "tools\Uninstall-SecretEMKO.ps1",
@@ -92,11 +114,11 @@ jobs:
           Get-FileHash "$stage\SecretEMKO.addon64" -Algorithm SHA256
           Get-FileHash "$stage\dlss5-bridge.addon64" -Algorithm SHA256
 
-      - name: End-to-end isolated FiveM installer test
+      - name: End-to-end RP Visual isolation and restore test
         shell: powershell
         run: |
           $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc2").Path
-          $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO-FiveM-Legacy"
+          $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO FiveM Legacy Test"
           $app = Join-Path $fake "FiveM.app"
           $oldPlugins = Join-Path $app "plugins"
 
@@ -107,13 +129,19 @@ jobs:
           New-Item -ItemType Directory -Path (Join-Path $oldPlugins "reshade-shaders\Shaders") -Force | Out-Null
           Set-Content -LiteralPath (Join-Path $oldPlugins "reshade-shaders\Shaders\UserCustom.fx") -Value "// user shader"
 
-          & (Join-Path $stage "tools\Install-SecretEMKO.ps1") -FiveMPath $fake -NonInteractive
+          & (Join-Path $stage "tools\Install-SecretEMKO.ps1") -FiveMPath $fake -Mode RPVisual -NonInteractive
 
           $active = Join-Path $app "plugins"
-          if (-not (Test-Path (Join-Path $active "SecretEMKO.addon64"))) { throw "SecretEMKO.addon64 missing after install" }
-          if (-not (Test-Path (Join-Path $active "dxgi.dll"))) { throw "ReShade dxgi.dll missing after install" }
+          foreach ($name in @("dxgi.dll","ReShade.ini","Secret_Emko_Main.ini","Secret_Emko_Stream.ini")) {
+            if (-not (Test-Path (Join-Path $active $name))) { throw "Missing RP Visual output: $name" }
+          }
+          if (Test-Path (Join-Path $active "SecretEMKO.addon64")) { throw "External SECRET EMKO add-on must not be active in RP Visual mode" }
+          if (Test-Path (Join-Path $active "swapchain_override.addon64")) { throw "External swapchain add-on must not be active in RP Visual mode" }
           if (Test-Path (Join-Path $active "existing-user-plugin.txt")) { throw "Old arbitrary plugin leaked into isolated active plugins folder" }
           if (-not (Test-Path (Join-Path $active "reshade-shaders\Shaders\UserCustom.fx"))) { throw "Existing user shader library was not migrated" }
+
+          $ascii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes((Join-Path $active "dxgi.dll")))
+          if (-not $ascii.Contains("only limited add-on functionality")) { throw "RP Visual did not install the limited standard ReShade build" }
 
           $backup = @(Get-ChildItem -LiteralPath $app -Directory -Filter "plugins.before-secret-emko.*")
           if ($backup.Count -ne 1) { throw "Expected exactly one isolated original plugins backup" }
@@ -122,7 +150,29 @@ jobs:
           & (Join-Path $stage "tools\Uninstall-SecretEMKO.ps1") -FiveMPath $fake -NonInteractive
 
           if (-not (Test-Path (Join-Path $active "existing-user-plugin.txt"))) { throw "Original plugins folder was not restored by uninstall" }
-          if (Test-Path (Join-Path $active "SecretEMKO.addon64")) { throw "SECRET EMKO remained active after restore" }
+          if (Test-Path (Join-Path $active "Secret_Emko_Main.ini")) { throw "RP Visual environment remained active after restore" }
+
+      - name: Reject unsupported Full Neural hardware before modification
+        shell: powershell
+        run: |
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc2").Path
+          $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Unsupported Neural Test"
+          $app = Join-Path $fake "FiveM.app"
+          $plugins = Join-Path $app "plugins"
+          New-Item -ItemType Directory -Path $plugins -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $app "CitizenFX.ini") -Value "[Game]"
+          Set-Content -LiteralPath (Join-Path $plugins "sentinel.txt") -Value "must-remain"
+
+          $failed = $false
+          try {
+            & (Join-Path $stage "tools\Install-SecretEMKO.ps1") -FiveMPath $fake -Mode FullNeural -NonInteractive
+          }
+          catch {
+            $failed = $true
+          }
+          if (-not $failed) { throw "Full Neural unexpectedly accepted unsupported runner hardware" }
+          if (-not (Test-Path (Join-Path $plugins "sentinel.txt"))) { throw "Installer modified plugins before hardware rejection" }
+          if (@(Get-ChildItem -LiteralPath $app -Directory -Filter "plugins.before-secret-emko.*").Count -ne 0) { throw "Installer isolated plugins before hardware rejection" }
 
       - name: Upload v2 package
         uses: actions/upload-artifact@v4

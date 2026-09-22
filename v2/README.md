@@ -1,70 +1,55 @@
-# SECRET EMKO Neural Graphics v2 RC2 — RenoDX / ReShade architecture
+# SECRET EMKO Neural Graphics v2 RC2
 
-SECRET EMKO v2 RC2 is the hardened FiveM **GTA V Legacy x64** line. It uses a ReShade-native control surface, public RenoDX infrastructure and DLSS 5 Bridge, with an installer designed for ordinary RP players rather than a single developer machine.
+RC2 is the hardened **FiveM GTA V Legacy x64** distribution. The key change is that "portable for RP players" is no longer treated as the same thing as "force the Full Add-on neural stack everywhere."
 
-## What the installer now does
+## Install
 
-Run:
+For normal FiveM RP use, double-click:
 
 ```bat
 INSTALL_SECRET_EMKO.bat
 ```
 
-RC2 automatically resolves the FiveM Legacy installation. It supports the standard LocalAppData layout and custom installations discoverable from FiveM shortcuts; if necessary it opens a FiveM.exe picker.
+This installs **RP Visual**: the current official standard signed ReShade build plus the Secret Emko Main/Stream presets and their public shader dependencies.
 
-If no `plugins` folder exists, it creates one. If a non-SECRET-EMKO `plugins` folder already contains files, the default **Isolate** mode renames the entire existing folder to `plugins.before-secret-emko.<timestamp>`, creates a clean new `plugins` folder, migrates only a compatible ReShade loader and the old `reshade-shaders` library, and leaves arbitrary DLL/ASI/add-on hooks safely archived.
+For an RTX 50 Series system where the relevant server/environment explicitly permits ReShade Full Add-on client add-ons, use:
 
-A failed first isolated install attempts an automatic rollback to the original plugins folder. Uninstall snapshots the SECRET EMKO environment and restores the original folder when one existed.
+```bat
+INSTALL_SECRET_EMKO_FULL_NEURAL.bat
+```
 
-See `COMPATIBILITY.md` for the detailed behavior and limits.
+That enables the Full Neural stack: ReShade Full Add-on Support, SECRET EMKO UI/add-on, RenoDX DLSS 5, DLSS 5 Bridge and the pinned NVIDIA neural runtimes.
 
-## Hardware modes
+## FiveM path and existing plugins
 
-**Full Neural mode** is automatically selected only when an NVIDIA GeForce RTX 50 Series GPU is detected. NVIDIA currently documents DLSS 5 3D-Guided Neural Rendering for RTX 50 Series hardware.
+RC2 resolves standard and custom Legacy installs. It uses an explicit path when supplied, otherwise the standard LocalAppData install and discovered FiveM shortcuts; multiple discovered installations are resolved using the most recently modified `CitizenFX.ini`.
 
-Other NVIDIA, AMD and Intel GPUs receive **visual-compatibility mode**: SECRET EMKO UI, ReShade, Main/Stream presets and public shader/add-on content still install, but the installer does not pretend that DLSS 5 Neural Rendering is supported.
+If no `plugins` directory exists, RC2 creates it.
 
-An expert `-ForceNeuralStack` switch exists for controlled testing; it is not a compatibility guarantee.
+If an unrelated `plugins` directory already contains files, RC2 defaults to **Isolate**: it renames the entire old folder to `plugins.before-secret-emko.<timestamp>`, creates a clean active `plugins` folder, and carries forward only the old `reshade-shaders` library. DLL/ASI/add-on hooks are kept intact in the archived old folder rather than being blindly mixed into the new graphics chain.
 
-## ReShade and presets
+Failed first installs automatically attempt rollback. Uninstall snapshots the SECRET EMKO environment and restores the original plugins folder.
 
-The installer uses the current official ReShade Full Add-on setup when needed and verifies that the installed `dxgi.dll` exposes the ReShade add-on API.
+## Presets and external shaders
 
-The ReShade content manager reads the live official `EffectPackages.ini` and `Addons.ini`, installs the public shader packages required by the shipped presets, installs the official `swapchain_override` add-on, and writes portable relative paths.
+`Secret_Emko_Main.ini` is the default visual preset; `Secret_Emko_Stream.ini` is the lighter alternative. Public effects are resolved against ReShade's live official package catalog.
 
-`Secret_Emko_Main.ini` remains the default preset and `Secret_Emko_Stream.ini` is the lighter stream preset. Existing `reshade-shaders` content is carried into an isolated install so user-owned effects such as an existing QuantV setup can remain available. SECRET EMKO does not obtain proprietary packages from unofficial mirrors. If an external effect is absent, that unavailable technique is disabled in the installed preset rather than leaving the default in a broken state.
+User-owned shader libraries are carried forward. Proprietary packages such as QuantV are not fetched from unofficial mirrors. If an external effect is missing, RC2 removes that unavailable technique from the installed preset copy instead of leaving the default preset in an error state.
 
-## Runtime policy
+## Compatibility boundary
 
-- RenoDX framework: current upstream `origin/main` at build time; exact SHA recorded in `BUILD-MANIFEST.json`.
-- ReShade core/effect/add-on catalogs: current official upstream at install time.
-- DLSS 5 Bridge 1.4.12, RenoDX DLSS 5 consumer 4.70, DLSS SR 310.9.1, DLSS NR 310.8.0 and Streamline 2.14.1 remain pinned/verified where binary compatibility matters.
+FiveM documents that plugins can live in its application-data `plugins` directory and that servers may disallow them. ReShade also distinguishes the standard multiplayer-oriented build from Full Add-on Support. RC2 therefore uses the standard build for the default RP Visual path and requires explicit selection for Full Neural.
 
-This deliberately separates "safe to track latest" content from binary-sensitive runtime combinations.
+DLSS 5 3D-Guided Neural Rendering is only treated as supported on GeForce RTX 50 Series hardware. Other GPUs use RP Visual.
 
-## Multiplayer / RP servers
+FiveM for GTAV Enhanced is not supported by this Legacy RC2 line.
 
-FiveM supports a plugins folder, but server owners can disallow client plugins. ReShade Full Add-on Support also warns about multiplayer use. SECRET EMKO does **not** bypass plugin policy, Pure Mode, anti-cheat, ReShade network/depth restrictions or server rules.
+## Runtime/update policy
 
-That means RC2 can make installation portable and reversible, but it cannot make the stack work on a server that intentionally blocks it.
+RenoDX is built from current upstream main and its exact SHA is written to `BUILD-MANIFEST.json`. Public ReShade effect/add-on metadata follows current official catalogs. Binary-sensitive DLSS/NR/Bridge versions remain pinned and SHA-256 verified until a newer combination is validated together.
 
-## FiveM Enhanced
+## Not claimed as complete yet
 
-RC2 is **Legacy-only**. FiveM for GTAV Enhanced is a separate client line in 2026; the installer fails closed if it detects only Enhanced instead of guessing a path.
+Frame Generation remains gated until a real FiveM motion/depth/HUD-less-colour/swapchain/pacing integration is validated. The current RenoDX DLSS 5 path remains one real pass.
 
-## Frame Generation and pass count
-
-FiveM Frame Generation remains gated. Runtime DLL presence is not treated as proof of a working FG integration; valid motion/depth/HUD-less colour, swapchain ownership and pacing are still required.
-
-The current RenoDX DLSS 5 consumer path is treated as one real pass. SECRET EMKO does not expose fake 2/3-pass buttons.
-
-## Diagnostics
-
-Keep after testing:
-
-- `ReShade.log`
-- `dlss5-bridge.log` in Full Neural mode
-- any FiveM crash dump
-- `%LOCALAPPDATA%\SecretEMKO\state\install-state-*.json`
-
-The install state records the resolved FiveM path, detected GPUs, chosen hardware mode, archived original plugins folder and managed files.
+See `COMPATIBILITY.md` for the detailed matrix and recovery behavior.

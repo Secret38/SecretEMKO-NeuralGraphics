@@ -89,6 +89,7 @@ Copy-Item (Join-Path $RepoRoot "MAIN-SYSTEM.json") (Join-Path $stage "MAIN-SYSTE
 Copy-Item (Join-Path $RepoRoot "COMPATIBILITY.md") (Join-Path $stage "COMPATIBILITY.md") -Force
 Copy-Item (Join-Path $RepoRoot "tools\Uninstall-SecretEMKO.ps1") (Join-Path $stage "tools\Uninstall-SecretEMKO.ps1") -Force
 Copy-Item (Join-Path $RepoRoot "INSTALL_SECRET_EMKO.bat") (Join-Path $stage "INSTALL_SECRET_EMKO.bat") -Force
+Copy-Item (Join-Path $RepoRoot "INSTALL_SECRET_EMKO_FULL_NEURAL.bat") (Join-Path $stage "INSTALL_SECRET_EMKO_FULL_NEURAL.bat") -Force
 Copy-Item (Join-Path $RepoRoot "UNINSTALL_SECRET_EMKO.bat") (Join-Path $stage "UNINSTALL_SECRET_EMKO.bat") -Force
 
 Copy-Item (Join-Path $src "LICENSE") (Join-Path $stage "licenses\RenoDX-LICENSE.txt") -Force
