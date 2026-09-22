@@ -38,7 +38,7 @@ Copy-Item (Join-Path $RepoRoot "src\metadata.json") (Join-Path $addonDir "metada
 Write-Host "Preparing RenoDX shader toolchain..."
 Push-Location $src
 try {
-    & ".\scripts\setup-dev-env.ps1" -Update -Tools @("dxc", "slang")
+    & ".\scripts\setup-dev-env.ps1" -Update -Tools @("dxc", "slang", "glslang")
     if ($LASTEXITCODE -ne 0) { throw "RenoDX dev tool setup failed" }
 }
 finally { Pop-Location }
