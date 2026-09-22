@@ -3,7 +3,11 @@ name: Build Secret EMKO v2 RenoDX
 on:
   workflow_dispatch:
   push:
-    branches: [ main, complete-v2-main-system ]
+    branches: [ main ]
+    paths:
+      - "v2/**"
+      - ".github/workflows/build-v2-renodx.yml"
+  pull_request:
     paths:
       - "v2/**"
       - ".github/workflows/build-v2-renodx.yml"
@@ -30,6 +34,8 @@ jobs:
           $scripts = @(
             ".\v2\tools\Install-SecretEMKO.ps1",
             ".\v2\tools\Update-ReShadeContent.ps1",
+            ".\v2\tools\Prepare-FiveMPlugins.ps1",
+            ".\v2\tools\Uninstall-SecretEMKO.ps1",
             ".\v2\tools\build.ps1"
           )
           foreach ($script in $scripts) {
@@ -40,6 +46,25 @@ jobs:
           }
           .\v2\tools\Update-ReShadeContent.ps1 -TargetDirectory "$env:RUNNER_TEMP\SecretEmkoDryRun" -DryRun -SkipCoreCheck
 
+          # Exercise clean-room isolation and idempotent re-run semantics.
+          $mock = Join-Path $env:RUNNER_TEMP "SecretEmkoMock\FiveM.app"
+          $plugins = Join-Path $mock "plugins"
+          New-Item -ItemType Directory -Path $plugins -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $mock "CitizenFX.ini") -Value "[Game]"
+          Set-Content -LiteralPath (Join-Path $plugins "legacy.txt") -Value "preserve-me"
+
+          $first = (.\v2\tools\Prepare-FiveMPlugins.ps1 -PluginsPath $plugins | ConvertFrom-Json)
+          if (-not $first.isolated_existing_plugins) { throw "Expected existing plugins to be isolated." }
+          if (Test-Path (Join-Path $plugins "legacy.txt")) { throw "Legacy file leaked into clean plugins directory." }
+          if (-not (Test-Path (Join-Path $first.original_plugins_backup_path "legacy.txt"))) { throw "Legacy plugins backup is incomplete." }
+
+          New-Item -ItemType Directory -Path (Join-Path $plugins "SecretEMKO") -Force | Out-Null
+          @{ product = "SECRET EMKO Neural Graphics"; original_plugins_backup_path = $first.original_plugins_backup_path } |
+            ConvertTo-Json | Set-Content -LiteralPath (Join-Path $plugins "SecretEMKO\install-state.json")
+          $second = (.\v2\tools\Prepare-FiveMPlugins.ps1 -PluginsPath $plugins | ConvertFrom-Json)
+          if (-not $second.existing_secret_emko) { throw "Expected idempotent SECRET EMKO re-run detection." }
+          if ($second.original_plugins_backup_path -ne $first.original_plugins_backup_path) { throw "Original backup pointer changed on re-run." }
+
       - name: Build RenoDX-native addon and package
         shell: powershell
         run: |
@@ -48,13 +73,14 @@ jobs:
       - name: Verify release files
         shell: powershell
         run: |
-          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc1"
+          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc2"
           $required = @(
             "SecretEMKO.addon64",
             "dlss5-bridge.addon64",
             "INSTALL_SECRET_EMKO.bat",
             "tools\Install-SecretEMKO.ps1",
             "tools\Update-ReShadeContent.ps1",
+            "tools\Prepare-FiveMPlugins.ps1",
             "config\ReShade.SecretEMKO.ini",
             "presets\Secret_Emko_Main.ini",
             "presets\Secret_Emko_Stream.ini",
@@ -72,8 +98,8 @@ jobs:
       - name: Upload v2 package
         uses: actions/upload-artifact@v4
         with:
-          name: SecretEMKO-NeuralGraphics-v2.0.0-rc1
+          name: SecretEMKO-NeuralGraphics-v2.0.0-rc2
           path: |
-            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc1/**
-            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc1.zip
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc2/**
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc2.zip
           if-no-files-found: error
