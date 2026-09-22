@@ -10,8 +10,8 @@ $ProgressPreference = "SilentlyContinue"
 $RepoRoot = (Resolve-Path "$PSScriptRoot\..").Path
 $Upstream = "https://github.com/clshortfuse/renodx.git"
 $Commit = "9b212edad4dde9bca2b823b1e045b712b1a8d854"
-$BridgeUrl = "https://github.com/NIGos/dlss5-bridge/releases/download/v1.4.12/dlss5-bridge.addon64"
-$BridgeHash = "4F2ACECC1026AE89AC0B92767BE66CEEA2662AD0EF88710B89C7DA7840D548D4"
+$BridgeUrl = "https://github.com/NIGos/dlss5-bridge/releases/download/v1.4.13-pre8/dlss5-bridge.addon64"
+$BridgeHash = "C4C8B5BC4B26B2B3F3BF2767CDB708546D62F7D0BBB63D24E940C736DA9EFE26"
 
 if (Test-Path -LiteralPath $WorkDir) { Remove-Item -LiteralPath $WorkDir -Recurse -Force }
 New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
@@ -53,7 +53,7 @@ $built = Get-ChildItem -LiteralPath $buildDir -Recurse -File -Filter "renodx-sec
 if (-not $built) { throw "renodx-secretemko.addon64 not found after build" }
 
 $distRoot = Join-Path $RepoRoot "dist"
-$stage = Join-Path $distRoot "SecretEMKO-NeuralGraphics-v2.0.0-preview1"
+$stage = Join-Path $distRoot "SecretEMKO-NeuralGraphics-v2.0.0-preview2"
 $zip = "$stage.zip"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 if (Test-Path $zip) { Remove-Item $zip -Force }
@@ -94,10 +94,10 @@ Copy-Item $reshadeLicense (Join-Path $stage "licenses\ReShade-LICENSE.md") -Forc
 
 $manifest = [ordered]@{
     product = "SECRET EMKO Neural Graphics"
-    version = "2.0.0-preview1"
+    version = "2.0.0-preview2"
     built = (Get-Date).ToUniversalTime().ToString("o")
     renodx_commit = $Commit
-    bridge_version = "1.4.12"
+    bridge_version = "1.4.13-pre8"
     bridge_sha256 = $BridgeHash
     addon_sha256 = (Get-FileHash -LiteralPath (Join-Path $stage "SecretEMKO.addon64") -Algorithm SHA256).Hash
 }
