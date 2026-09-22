@@ -179,17 +179,13 @@ function Resolve-FiveMAppPath {
 
     if ($candidates.Count -eq 1) { return $candidates[0] }
     if ($candidates.Count -gt 1) {
-        $defaultFull = [IO.Path]::GetFullPath($default)
-        if ($candidates.Contains($defaultFull)) {
-            Warn "Multiple FiveM Legacy installs were discovered; selecting the standard LocalAppData install."
-            return $defaultFull
-        }
-
         $ordered = $candidates | Sort-Object {
             $citizen = Join-Path $_ "CitizenFX.ini"
             if (Test-Path -LiteralPath $citizen) { (Get-Item -LiteralPath $citizen).LastWriteTimeUtc } else { [datetime]::MinValue }
         } -Descending
-        Warn "Multiple custom FiveM Legacy installs were discovered; selecting the most recently used candidate."
+        Warn "Multiple FiveM Legacy installs were discovered; selecting the candidate with the most recently modified CitizenFX.ini."
+        Write-Host ("   Selected: " + $ordered[0])
+        Write-Host "   Use -FiveMPath if another installation should be targeted."
         return $ordered[0]
     }
 
