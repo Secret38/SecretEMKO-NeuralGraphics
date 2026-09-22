@@ -180,7 +180,17 @@ if (-not (Test-Path -LiteralPath $reshade)) {
     Start-Process -FilePath $setup
     exit 2
 }
-Ok "Existing ReShade dxgi.dll preserved"
+$reshadeBytes = [IO.File]::ReadAllBytes($reshade)
+$reshadeAscii = [Text.Encoding]::ASCII.GetString($reshadeBytes)
+if (-not $reshadeAscii.Contains("ReShadeRegisterAddon")) {
+    $setup = Join-Path $Cache "ReShade_Setup_6.8.0_Addon.exe"
+    Warn "The existing dxgi.dll does not expose ReShadeRegisterAddon and appears to be the standard build."
+    Write-Host "   SECRET EMKO requires ReShade Full Add-on Support. The official installer will be opened; install the Add-on build and then run SECRET EMKO again."
+    Invoke-WebRequest -UseBasicParsing -Uri $Urls.ReShade -OutFile $setup
+    Start-Process -FilePath $setup
+    exit 3
+}
+Ok "Existing ReShade Full Add-on Support dxgi.dll preserved"
 
 Step "Backing up managed configuration"
 $reshadeIni = Join-Path $PluginsPath "ReShade.ini"
