@@ -1,0 +1,32 @@
+{
+  "product": "SECRET EMKO Neural Graphics",
+  "version": "2.0.0-rc1",
+  "role": "main-system",
+  "reshade": {
+    "core": {
+      "source": "https://reshade.me/",
+      "policy": "latest official Full Add-on Support at install time",
+      "minimum": "6.8.0"
+    },
+    "effects": {
+      "catalog": "https://raw.githubusercontent.com/crosire/reshade-shaders/list/EffectPackages.ini",
+      "policy": "latest packages referenced by shipped presets"
+    },
+    "addons": {
+      "catalog": "https://raw.githubusercontent.com/crosire/reshade-shaders/list/Addons.ini",
+      "policy": "latest official catalog entry",
+      "managed": [
+        "swapchain_override"
+      ]
+    },
+    "presets": [
+      "Secret_Emko_Main.ini",
+      "Secret_Emko_Stream.ini"
+    ],
+    "preserveExternalContent": true
+  },
+  "runtimeCritical": {
+    "policy": "pinned and SHA-256 verified until separately validated",
+    "reason": "DLSS/NR/Bridge binary compatibility is more important than blindly following newest assets"
+  }
+}

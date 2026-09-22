@@ -3,7 +3,7 @@ name: Build Secret EMKO v2 RenoDX
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ main, complete-v2-main-system ]
     paths:
       - "v2/**"
       - ".github/workflows/build-v2-renodx.yml"
@@ -24,6 +24,22 @@ jobs:
           git --version
           cmake --version
 
+      - name: Validate PowerShell + live ReShade catalogs
+        shell: powershell
+        run: |
+          $scripts = @(
+            ".\v2\tools\Install-SecretEMKO.ps1",
+            ".\v2\tools\Update-ReShadeContent.ps1",
+            ".\v2\tools\build.ps1"
+          )
+          foreach ($script in $scripts) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
+          }
+          .\v2\tools\Update-ReShadeContent.ps1 -TargetDirectory "$env:RUNNER_TEMP\SecretEmkoDryRun" -DryRun -SkipCoreCheck
+
       - name: Build RenoDX-native addon and package
         shell: powershell
         run: |
@@ -32,12 +48,17 @@ jobs:
       - name: Verify release files
         shell: powershell
         run: |
-          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-preview1"
+          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc1"
           $required = @(
             "SecretEMKO.addon64",
             "dlss5-bridge.addon64",
             "INSTALL_SECRET_EMKO.bat",
             "tools\Install-SecretEMKO.ps1",
+            "tools\Update-ReShadeContent.ps1",
+            "config\ReShade.SecretEMKO.ini",
+            "presets\Secret_Emko_Main.ini",
+            "presets\Secret_Emko_Stream.ini",
+            "MAIN-SYSTEM.json",
             "README.md",
             "VERSIONS.json"
           )
@@ -51,8 +72,8 @@ jobs:
       - name: Upload v2 package
         uses: actions/upload-artifact@v4
         with:
-          name: SecretEMKO-NeuralGraphics-v2.0.0-preview1
+          name: SecretEMKO-NeuralGraphics-v2.0.0-rc1
           path: |
-            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-preview1/**
-            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-preview1.zip
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc1/**
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc1.zip
           if-no-files-found: error

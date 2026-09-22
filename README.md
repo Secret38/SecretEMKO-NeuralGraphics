@@ -13,7 +13,10 @@ The v2 package provides:
 - Natural, Clean, Detail, Enhanced, Cinematic and Ultra Detail quality profiles
 - Neural controls with explicit explanations and safe defaults
 - GTA V Legacy synthetic DLSS contract configuration
-- pinned/current component versions and SHA-256 verification
+- central v2 main-system policy with current official ReShade shader/add-on catalogs
+- `Secret_Emko_Main.ini` and `Secret_Emko_Stream.ini` post-processing presets
+- portable ReShade configuration without per-user absolute paths
+- pinned/verified binary-sensitive runtime versions and SHA-256 verification
 - one-run installer for the FiveM plugins directory
 - backups and an uninstaller
 - runtime diagnostics instead of silently assuming that a DLL loaded
@@ -23,15 +26,15 @@ Source and documentation live under [v2/](v2/README.md).
 
 ### Current v2 stack
 
-- RenoDX public framework: pinned current main revision used by the build
-- ReShade Full Add-on Support 6.8.0+
+- RenoDX public framework: current upstream main is resolved at build time and the exact commit is recorded in the build manifest
+- ReShade Full Add-on Support 6.8.0+; the installer resolves the current official setup when installation is needed
 - DLSS 5 Bridge 1.4.12 stable
 - RenoDX DLSS 5 consumer 4.70
 - NVIDIA DLSS SR 310.9.1
 - NVIDIA DLSS Neural Rendering 310.8.0 for RTX 50
 - NVIDIA Streamline 2.14.1 staged as optional runtime support
 
-Third-party/proprietary runtime packages are downloaded and verified by the installer instead of being committed to this repository.
+Public ReShade shader packages and the official swapchain override add-on are resolved from ReShade's current official catalogs at install/update time. Binary-sensitive DLSS/NR/Bridge runtime packages remain pinned and verified rather than being blindly advanced to incompatible "latest" combinations. Third-party/proprietary runtime packages are not committed to this repository.
 
 ## v1 — legacy ASI prototype
 
