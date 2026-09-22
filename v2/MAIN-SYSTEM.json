@@ -1,20 +1,57 @@
 {
   "product": "SECRET EMKO Neural Graphics",
-  "version": "2.0.0-rc1",
+  "version": "2.0.0-rc2",
   "role": "main-system",
+  "installer": {
+    "target": "FiveM GTA V Legacy x64",
+    "default_launcher": "INSTALL_SECRET_EMKO.bat -> RPVisual",
+    "full_neural_launcher": "INSTALL_SECRET_EMKO_FULL_NEURAL.bat -> FullNeural",
+    "path_resolution": [
+      "explicit parameter",
+      "standard LocalAppData path",
+      "Windows FiveM shortcut discovery",
+      "interactive FiveM.exe picker"
+    ],
+    "multiple_installs": "select discovered Legacy candidate with most recently modified CitizenFX.ini; explicit FiveMPath overrides",
+    "existing_plugins_default": "isolate",
+    "isolation_behavior": "rename existing plugins to plugins.before-secret-emko.<timestamp>, create a clean active plugins folder, migrate reshade-shaders only; arbitrary DLL/ASI/add-on hooks remain archived",
+    "rollback": "restore original plugins folder automatically on failed first isolated install",
+    "uninstall": "snapshot current SECRET EMKO environment then restore original plugins folder",
+    "enhanced": "fail-closed"
+  },
+  "modes": {
+    "rp_visual": {
+      "reshade": "standard signed",
+      "addons": false,
+      "neural": false,
+      "presets": true,
+      "default": true
+    },
+    "full_neural": {
+      "reshade": "Full Add-on",
+      "addons": true,
+      "neural": true,
+      "hardware": "GeForce RTX 50 Series",
+      "explicit_opt_in": true
+    }
+  },
+  "multiplayer": {
+    "policy": "respect FiveM server plugin policy, Pure Mode, anti-cheat and ReShade restrictions",
+    "bypass": false
+  },
   "reshade": {
     "core": {
       "source": "https://reshade.me/",
-      "policy": "latest official Full Add-on Support at install time",
-      "minimum": "6.8.0"
+      "minimum": "6.8.0",
+      "policy": "latest official setup appropriate to selected mode"
     },
     "effects": {
       "catalog": "https://raw.githubusercontent.com/crosire/reshade-shaders/list/EffectPackages.ini",
-      "policy": "latest packages referenced by shipped presets"
+      "policy": "latest packages referenced by shipped presets; unavailable external techniques disabled locally"
     },
     "addons": {
       "catalog": "https://raw.githubusercontent.com/crosire/reshade-shaders/list/Addons.ini",
-      "policy": "latest official catalog entry",
+      "policy": "Full Neural only",
       "managed": [
         "swapchain_override"
       ]
@@ -23,7 +60,7 @@
       "Secret_Emko_Main.ini",
       "Secret_Emko_Stream.ini"
     ],
-    "preserveExternalContent": true
+    "preserveExternalShaders": true
   },
   "runtimeCritical": {
     "policy": "pinned and SHA-256 verified until separately validated",

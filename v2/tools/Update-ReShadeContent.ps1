@@ -82,8 +82,8 @@ function Get-PresetEffects([string[]]$PresetPaths) {
 }
 
 function Get-LatestReShadeAddonSetup {
-    $home = Invoke-WebRequest -UseBasicParsing -Uri "https://reshade.me/" -Headers @{ "User-Agent" = "SecretEMKO-v2" }
-    if ($home.Content -notmatch 'Version\s+([0-9]+\.[0-9]+\.[0-9]+)') {
+    $landingPage = Invoke-WebRequest -UseBasicParsing -Uri "https://reshade.me/" -Headers @{ "User-Agent" = "SecretEMKO-v2" }
+    if ($landingPage.Content -notmatch 'Version\s+([0-9]+\.[0-9]+\.[0-9]+)') {
         throw "Could not resolve the current ReShade version from reshade.me."
     }
     $version = $Matches[1]
@@ -97,9 +97,11 @@ function Test-ReShadeFullAddon([string]$Directory) {
     $dll = Join-Path $Directory "dxgi.dll"
     if (-not (Test-Path -LiteralPath $dll)) { return $false }
     try {
+        $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($dll)
+        if ($info.ProductName -notlike "ReShade*") { return $false }
         $bytes = [IO.File]::ReadAllBytes($dll)
         $ascii = [Text.Encoding]::ASCII.GetString($bytes)
-        return $ascii.Contains("ReShadeRegisterAddon")
+        return -not $ascii.Contains("only limited add-on functionality")
     }
     catch { return $false }
 }
@@ -197,7 +199,7 @@ function Get-IniLines([string]$Path) {
     if (Test-Path -LiteralPath $Path) {
         foreach ($line in Get-Content -LiteralPath $Path) { [void]$lines.Add($line) }
     }
-    return $lines
+    return ,$lines
 }
 
 function Set-IniValue([string]$Path, [string]$Section, [string]$Key, [string]$Value) {
@@ -299,6 +301,39 @@ function Install-PresetsAndConfig([string]$Target) {
     Ok "Main/Stream presets and portable ReShade paths installed"
 }
 
+function Disable-MissingPresetTechniques([string]$Path, [string[]]$MissingEffects) {
+    if (-not (Test-Path -LiteralPath $Path) -or $MissingEffects.Count -eq 0) { return }
+
+    $missing = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($effect in $MissingEffects) { [void]$missing.Add($effect) }
+
+    $lines = @(Get-Content -LiteralPath $Path)
+    $changed = $false
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -notmatch '^(Techniques|TechniqueSorting)=(.*)$') { continue }
+
+        $key = $Matches[1]
+        $entries = @($Matches[2] -split "," | Where-Object { $_ })
+        $kept = New-Object System.Collections.Generic.List[string]
+
+        foreach ($entry in $entries) {
+            $drop = $false
+            if ($entry -match '@(.+\.fx)$') {
+                $drop = $missing.Contains($Matches[1])
+            }
+            if (-not $drop) { [void]$kept.Add($entry) }
+            else { $changed = $true }
+        }
+
+        $lines[$i] = $key + "=" + ($kept -join ",")
+    }
+
+    if ($changed) {
+        Set-Content -LiteralPath $Path -Value $lines -Encoding UTF8
+        Warn ("Disabled unavailable external techniques in " + (Split-Path -Leaf $Path))
+    }
+}
+
 function Install-SwapchainOverride([string]$Target, [string]$Arch) {
     $catalogText = (Invoke-WebRequest -UseBasicParsing -Uri $AddonCatalogUrl -Headers @{ "User-Agent" = "SecretEMKO-v2" }).Content
     $addons = Parse-Catalog $catalogText
@@ -376,8 +411,10 @@ try {
     }
 
     if ($missingLocal.Count -gt 0) {
-        Warn ("Main preset needs externally supplied files that were not found locally: " + ($missingLocal -join ", "))
+        Warn ("Preset references external/proprietary files that were not found locally: " + ($missingLocal -join ", "))
         Warn "SECRET EMKO does not fetch proprietary graphics packages from unofficial mirrors."
+        Disable-MissingPresetTechniques (Join-Path $TargetDirectory "Secret_Emko_Main.ini") $missingLocal
+        Disable-MissingPresetTechniques (Join-Path $TargetDirectory "Secret_Emko_Stream.ini") $missingLocal
     }
 
     $stateDir = Join-Path $TargetDirectory "SecretEMKO"

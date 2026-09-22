@@ -1,7 +1,19 @@
 {
   "product": "SECRET EMKO Neural Graphics",
-  "version": "2.0.0-rc1",
-  "verified_on": "2026-09-22",
+  "version": "2.0.0-rc2",
+  "verified_on": "2026-09-23",
+  "support": {
+    "platform": "Windows x64",
+    "game": "FiveM GTA V Legacy",
+    "fivem_installation": "standard and custom paths; automatic discovery with interactive fallback",
+    "existing_plugins": "isolated by default and restored transactionally",
+    "enhanced": "not supported by v2 RC2; installer fails closed",
+    "modes": {
+      "rp_visual": "default launcher; standard signed ReShade + Main/Stream presets; no external ReShade add-ons",
+      "full_neural": "explicit launcher/Mode FullNeural; RTX 50-series + ReShade Full Add-on + SECRET EMKO/RenoDX/DLSS stack"
+    },
+    "multiplayer": "server plugin policy applies; no Pure Mode, anti-cheat, server restriction or ReShade restriction bypass"
+  },
   "components": {
     "renodx_framework": {
       "repository": "clshortfuse/renodx",
@@ -11,52 +23,53 @@
     },
     "reshade": {
       "minimum_version": "6.8.0",
-      "policy": "latest official Full Add-on Support resolved from reshade.me at install time",
-      "distribution": "official installer; not redistributed"
+      "rp_visual": "current official standard signed setup at install time",
+      "full_neural": "current official Full Add-on setup at install time; explicit opt-in only",
+      "distribution": "official installers; not redistributed"
     },
     "reshade_effects": {
       "catalog": "crosire/reshade-shaders list/EffectPackages.ini",
-      "policy": "latest official packages required by shipped presets"
+      "policy": "latest official packages required by shipped presets; unavailable external effects are disabled in installed presets"
     },
     "reshade_addons": {
       "catalog": "crosire/reshade-shaders list/Addons.ini",
-      "managed": [
+      "managed_full_neural": [
         "swapchain_override"
       ],
-      "policy": "latest official catalog asset"
+      "rp_visual": "external add-ons are skipped"
     },
     "presets": {
       "default": "Secret_Emko_Main.ini",
       "stream": "Secret_Emko_Stream.ini",
-      "note": "Main includes QuantV settings; QuantV itself is external/proprietary and is not downloaded from unofficial mirrors."
+      "note": "Existing reshade-shaders content is migrated from the isolated old plugins folder; QuantV is never downloaded from unofficial mirrors."
     },
     "dlss5_bridge": {
       "version": "1.4.12",
       "asset": "dlss5-bridge.addon64",
       "sha256": "4F2ACECC1026AE89AC0B92767BE66CEEA2662AD0EF88710B89C7DA7840D548D4",
+      "mode": "full_neural_only",
       "license": "MIT"
     },
     "renodx_dlss5_consumer": {
       "version": "4.70",
-      "source": "RankFTW/rhi-repo release mirror used by DLSS5-Feeder",
       "package_sha256": "D6E356D01B429AF6288F488A4926C44F1D779A7D4586EE8C79D04D3A09A536E6",
-      "redistribution": "downloaded at install time; not bundled"
+      "mode": "full_neural_only"
     },
     "nvidia_dlss_sr": {
       "version": "310.9.1",
       "package_sha256": "AABA83B288BD145C3808E8D7A0BA03CC8C8676D18AD984B1BFA6563046A3BA37",
-      "redistribution": "downloaded at install time; not bundled"
+      "mode": "full_neural_only"
     },
     "nvidia_dlss_nr": {
       "version": "310.8.0",
       "package_sha256": "388C0A7912E15EC911B9C9E11A692142B11FE387DDF2B637D8C358138FFFB3AC",
       "rtx50_dll_sha256": "E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E",
-      "redistribution": "downloaded at install time; not bundled"
+      "hardware_policy": "GeForce RTX 50 Series; unsupported hardware rejected unless expert ForceNeuralStack is supplied"
     },
     "nvidia_streamline": {
       "version": "2.14.1",
       "official_package_sha256": "92C4D954631A1710DA86CA3FA8D5034F2B9503838C95FC4AE977AE149319781B",
-      "redistribution": "downloaded from NVIDIA at install time; not bundled"
+      "mode": "full_neural_only"
     }
   }
 }
