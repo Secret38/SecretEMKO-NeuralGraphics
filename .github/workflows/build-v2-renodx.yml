@@ -1,0 +1,58 @@
+name: Build Secret EMKO v2 RenoDX
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - "v2/**"
+      - ".github/workflows/build-v2-renodx.yml"
+
+jobs:
+  build:
+    runs-on: windows-2022
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Secret EMKO
+        uses: actions/checkout@v4
+
+      - name: Toolchain
+        shell: powershell
+        run: |
+          git --version
+          cmake --version
+
+      - name: Build RenoDX-native addon and package
+        shell: powershell
+        run: |
+          .\v2\tools\build.ps1
+
+      - name: Verify release files
+        shell: powershell
+        run: |
+          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-preview1"
+          $required = @(
+            "SecretEMKO.addon64",
+            "dlss5-bridge.addon64",
+            "INSTALL_SECRET_EMKO.bat",
+            "tools\Install-SecretEMKO.ps1",
+            "README.md",
+            "VERSIONS.json"
+          )
+          foreach ($f in $required) {
+            $p = Join-Path $stage $f
+            if (-not (Test-Path $p)) { throw "Missing release file: $f" }
+          }
+          Get-FileHash "$stage\SecretEMKO.addon64" -Algorithm SHA256
+          Get-FileHash "$stage\dlss5-bridge.addon64" -Algorithm SHA256
+
+      - name: Upload v2 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: SecretEMKO-NeuralGraphics-v2.0.0-preview1
+          path: |
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-preview1/**
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-preview1.zip
+          if-no-files-found: error
