@@ -28,7 +28,7 @@
 namespace {
 
 constexpr const char* kProduct = "SECRET EMKO Neural Graphics";
-constexpr const char* kVersion = "2.0.0-preview1";
+constexpr const char* kVersion = "2.0.0-preview2";
 constexpr const char* kProviderSection = "RenoDX.DLSS5";
 constexpr const char* kOwnSection = "SecretEMKO";
 
@@ -39,7 +39,8 @@ bool g_loaded = false;
 
 struct NeuralSettings {
   int enabled = 1;
-  int enable_upscaling = 0;
+  int enable_upscaling = 0; // compatibility with RenoDX DLSS5 4.x
+  float resolution_scale = 1.0f; // RenoDX DLSS5 6.x, multiplier 0.25-1.0
   int preset = 0;
   int style = 1;
   float intensity = 1.20f;
@@ -106,6 +107,7 @@ NeuralSettings g_nr;
 BridgeSettings g_bridge;
 int g_profile_index = 3;
 int g_fg_policy = 0; // 0 off, 1 2x, 2 3x; policy only until provider exists.
+int g_consumer_major = 6; // installer writes 4 for compatibility channel or 6 for latest.
 
 template <typename T>
 void WriteConfig(const char* section, const char* key, const T& value) {
@@ -205,7 +207,12 @@ void LoadBridgeConfig() {
 void WriteNeuralSettings() {
   WriteConfig(kProviderSection, "EnableHooks", 2);
   WriteConfig(kProviderSection, "NeuralUplift", g_nr.enabled);
-  WriteConfig(kProviderSection, "NREnableUpscaling", g_nr.enable_upscaling);
+  if (g_consumer_major >= 6) {
+    WriteConfig(kProviderSection, "NRFollowInputRes", 0);
+    WriteConfig(kProviderSection, "NRResolutionScale", std::clamp(g_nr.resolution_scale, 0.25f, 1.0f));
+  } else {
+    WriteConfig(kProviderSection, "NREnableUpscaling", g_nr.enable_upscaling);
+  }
   WriteConfig(kProviderSection, "NRPreset", g_nr.preset);
   WriteConfig(kProviderSection, "NRStyle", g_nr.style);
   WriteConfig(kProviderSection, "NRIntensity", g_nr.intensity);
@@ -229,7 +236,14 @@ void WriteNeuralSettings() {
 
 void LoadNeuralSettings() {
   ReadConfig(kProviderSection, "NeuralUplift", g_nr.enabled);
-  ReadConfig(kProviderSection, "NREnableUpscaling", g_nr.enable_upscaling);
+  ReadConfig(kOwnSection, "ConsumerMajor", g_consumer_major);
+  if (g_consumer_major >= 6) {
+    ReadConfig(kProviderSection, "NRResolutionScale", g_nr.resolution_scale);
+    g_nr.resolution_scale = std::clamp(g_nr.resolution_scale, 0.25f, 1.0f);
+  } else {
+    ReadConfig(kProviderSection, "NREnableUpscaling", g_nr.enable_upscaling);
+    g_nr.resolution_scale = 1.0f;
+  }
   ReadConfig(kProviderSection, "NRPreset", g_nr.preset);
   ReadConfig(kProviderSection, "NRStyle", g_nr.style);
   ReadConfig(kProviderSection, "NRIntensity", g_nr.intensity);
@@ -267,6 +281,7 @@ void ApplyProfile(int index) {
   g_nr.color_strength = p.color_strength;
   g_nr.enabled = 1;
   g_nr.enable_upscaling = 0;
+  g_nr.resolution_scale = 1.0f;
   g_nr.preset = 0;
   g_nr.auto_mask = 1;
   g_nr.ui_correction = 1;
@@ -333,7 +348,7 @@ void DrawHeader() {
   ImGui::TextUnformatted("SECRET EMKO");
   ImGui::SameLine();
   ImGui::TextDisabled("NEURAL GRAPHICS");
-  ImGui::TextDisabled("FiveM GTA V Legacy  |  RenoDX + ReShade architecture  |  v2.0 preview");
+  ImGui::TextDisabled("FiveM GTA V Legacy  |  RenoDX + ReShade  |  v2.0 preview2");
   const float readiness = static_cast<float>(CountReady()) / 6.0f;
   char overlay[64];
   sprintf_s(overlay, "Core stack %.0f%% ready", readiness * 100.0f);
@@ -379,6 +394,7 @@ void DrawOverview() {
   ImGui::BulletText("FiveM keeps its normal D3D11 device creation path.");
   ImGui::BulletText("ReShade loads Secret EMKO, RenoDX DLSS 5 and DLSS 5 Bridge as add-ons.");
   ImGui::BulletText("The bridge uses a synthetic DLSS contract because GTA V Legacy has no native DLSS.");
+  ImGui::BulletText("RenoDX DLSS5 channel: %s (major %d).", g_consumer_major >= 6 ? "Latest" : "Compatibility", g_consumer_major);
   ImGui::BulletText("Neural Rendering is tuned by Secret EMKO profiles; raw controls remain available.");
   ImGui::BulletText("No PureDark code, authentication or paid-mod assets are used.");
 }
@@ -485,8 +501,8 @@ void DrawNeural() {
   ImGui::Spacing();
   ImGui::SeparatorText("Pass topology");
   ImGui::TextUnformatted("Active model passes: 1");
-  Help("The current RenoDX DLSS 5 v4.7 consumer is a single-pass core. Secret EMKO does not fake 2/3-pass controls. Multi-pass will only be enabled when the current core exposes a safe, testable API for independent feature histories.");
-  ImGui::TextDisabled("Latest-core policy: one correct temporal pass is preferred over stacking an older incompatible consumer.");
+  Help("The current RenoDX DLSS 5 consumer path used here is treated as one real temporal pass. Secret EMKO does not fake 2/3-pass controls. Additional passes will only be exposed after a current consumer path with independent histories is validated in FiveM.");
+  ImGui::TextDisabled("Quality policy: one correct temporal pass is preferred over cosmetic pass stacking.");
 
   if (changed) WriteNeuralSettings();
 }
@@ -494,8 +510,8 @@ void DrawNeural() {
 void DrawQuality() {
   bool changed = false;
   ImGui::SeparatorText("Colour bridge");
-  changed |= Slider("Transfer Strength", &g_nr.transfer_strength, 0.0f, 1.0f, "Legacy colour-transfer strength retained by v4.7. 1.0 preserves the full bridge response.");
-  changed |= Slider("Colour Strength", &g_nr.color_strength, 0.0f, 1.0f, "Chroma contribution. Enhanced uses 0.95 to avoid oversaturated fine detail.");
+  changed |= Slider("Transfer Strength", &g_nr.transfer_strength, 0.0f, 2.0f, "Colour/luminance transfer strength. 1.0 is the quality-first neutral baseline; values above 1.0 are expert tuning and may be clamped by the active external consumer.");
+  changed |= Slider("Colour Strength", &g_nr.color_strength, 0.0f, 2.0f, "Chroma contribution. Enhanced uses 0.95 to avoid oversaturated fine detail; values above 1.0 are intentionally available for advanced tuning.");
 
   changed |= Slider("Scene Paper-White Scale", &g_nr.paper_white_scale, 0.25f, 4.0f, "Use 1.0 for FiveM SDR. This exists mainly for HDR contracts.");
   changed |= Slider("Diffuse White", &g_nr.diffuse_white_nits, 80.0f, 500.0f, "v4.7 HDR diffuse-white reference. It is effectively informational for a normal SDR FiveM contract.", "%.0f nits");
@@ -510,13 +526,20 @@ void DrawQuality() {
   changed |= Slider("Motion Scale X", &g_nr.mv_scale_x, 0.25f, 2.0f, "Multiplier applied by the neural consumer. 1.0 is neutral.");
   changed |= Slider("Motion Scale Y", &g_nr.mv_scale_y, 0.25f, 2.0f, "Multiplier applied by the neural consumer. 1.0 is neutral.");
 
-  bool nr_upscale = g_nr.enable_upscaling != 0;
-  if (ImGui::Checkbox("Neural pass performs upscaling", &nr_upscale)) {
-    g_nr.enable_upscaling = nr_upscale ? 1 : 0;
-    changed = true;
+  if (g_consumer_major >= 6) {
+    changed |= Slider("Neural Model Resolution", &g_nr.resolution_scale, 0.25f, 1.0f,
+                      "RenoDX DLSS5 6.x model working scale. 1.00 = 100% quality. Lower only when neural cost is too high.",
+                      "%.2fx");
+    ImGui::TextDisabled("Recommended: 1.00x at 3440x1440 on RTX 50. Try 0.85x before reducing image-quality strengths.");
+  } else {
+    bool nr_upscale = g_nr.enable_upscaling != 0;
+    if (ImGui::Checkbox("Neural pass performs upscaling", &nr_upscale)) {
+      g_nr.enable_upscaling = nr_upscale ? 1 : 0;
+      changed = true;
+    }
+    Help("Compatibility consumer 4.x uses the older NREnableUpscaling switch. Leave OFF for the GTA V Legacy synthetic 1:1 contract.");
+    ImGui::TextDisabled("Compatibility channel: model-resolution scaling is not exposed through the 6.x control.");
   }
-  Help("Leave OFF for the GTA V Legacy synthetic 1:1 contract. The bridge/provider path is being used for Neural Rendering, not as a replacement for GTA's render-resolution controls.");
-  if (g_nr.enable_upscaling) ImGui::TextWrapped("Not recommended for the current FiveM synthetic path.");
 
   if (changed) WriteNeuralSettings();
 
@@ -643,7 +666,7 @@ void DrawAbout() {
   ImGui::TextUnformatted("SECRET EMKO Neural Graphics");
   ImGui::Text("Version %s", kVersion);
   ImGui::Spacing();
-  ImGui::TextWrapped("A FiveM GTA V Legacy control and integration layer built around public ReShade/RenoDX infrastructure and the open-source DLSS 5 Bridge. NVIDIA neural runtimes are separate third-party components.");
+  ImGui::TextWrapped("A FiveM GTA V Legacy control and integration layer built around public ReShade/RenoDX infrastructure and the open-source DLSS 5 Bridge. The RenoDX DLSS5 neural consumer and NVIDIA neural runtime are separate external components and are not rebranded as SECRET EMKO.");
   ImGui::Spacing();
   ImGui::SeparatorText("Attribution");
   ImGui::BulletText("RenoDX framework: Carlos Lopez Jr. and contributors - MIT");
