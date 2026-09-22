@@ -73,7 +73,8 @@ jobs:
           New-Item -ItemType Directory -Path $target -Force | Out-Null
           $targetExe = Join-Path $target "_SecretEMKO_ReShadeHost.exe"
           Copy-Item "$env:WINDIR\System32\notepad.exe" $targetExe -Force
-          $p = Start-Process -FilePath $setup -ArgumentList @("--headless","--api","dxgi",$targetExe) -Wait -PassThru
+          $quotedTarget = '"' + $targetExe + '"'
+          $p = Start-Process -FilePath $setup -ArgumentList @("--headless","--api","dxgi",$quotedTarget) -Wait -PassThru
           Remove-Item $targetExe -Force -ErrorAction SilentlyContinue
           if ($p.ExitCode -ne 0) { throw "Full Add-on setup failed with $($p.ExitCode)" }
           $dll = Join-Path $target "dxgi.dll"

@@ -311,7 +311,7 @@ function Install-ReShadeHeadless([string]$Directory, [bool]$FullAddon) {
         }
         [void]$args.Add("--api")
         [void]$args.Add("dxgi")
-        [void]$args.Add($targetExe)
+        [void]$args.Add('"' + $targetExe + '"')
 
         $proc = Start-Process -FilePath $setup -ArgumentList @($args) -Wait -PassThru
         if ($proc.ExitCode -ne 0) {
