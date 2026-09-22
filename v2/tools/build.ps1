@@ -35,7 +35,27 @@ Copy-Item (Join-Path $RepoRoot "src\addon.cpp") (Join-Path $addonDir "addon.cpp"
 Copy-Item (Join-Path $RepoRoot "src\metadata.json") (Join-Path $addonDir "metadata.json") -Force
 
 Write-Host "Preparing RenoDX shader toolchain..."
-Write-Host "Using Windows SDK DXC to avoid transient GitHub API download throttling; RenoDX setup only manages Slang locally."
+$toolBin = Join-Path $src "bin"
+New-Item -ItemType Directory -Path $toolBin -Force | Out-Null
+
+# The RenoDX helper resolves DXC release metadata through the GitHub API. Hosted
+# runners can hit anonymous API throttling, so CI pins the current official
+# Microsoft release asset directly and verifies its GitHub-published SHA-256.
+$dxcUrl = "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.9.2607/dxc_2026_07_29.zip"
+$dxcHash = "A1DFB116BA3EEAE6A1582291B53A8E7BF65AD760676BD3194685C8F7367CD241"
+$dxcZip = Join-Path $WorkDir "dxc_2026_07_29.zip"
+$dxcExtract = Join-Path $WorkDir "dxc"
+Invoke-WebRequest -UseBasicParsing -Uri $dxcUrl -OutFile $dxcZip
+$actualDxc = (Get-FileHash -LiteralPath $dxcZip -Algorithm SHA256).Hash
+if ($actualDxc -ine $dxcHash) { throw "DXC archive hash mismatch: $actualDxc" }
+Expand-Archive -LiteralPath $dxcZip -DestinationPath $dxcExtract -Force
+Copy-Item (Join-Path $dxcExtract "bin\x64\dxc.exe") $toolBin -Force
+Copy-Item (Join-Path $dxcExtract "bin\x64\dxcompiler.dll") $toolBin -Force
+if (Test-Path (Join-Path $dxcExtract "bin\x64\dxil.dll")) {
+    Copy-Item (Join-Path $dxcExtract "bin\x64\dxil.dll") $toolBin -Force
+}
+
+# Let RenoDX manage Slang and copy FXC from the installed Windows SDK.
 Push-Location $src
 try {
     & ".\scripts\setup-dev-env.ps1" -Update -Tools @("slang")
