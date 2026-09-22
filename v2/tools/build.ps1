@@ -12,6 +12,7 @@ $Upstream = "https://github.com/clshortfuse/renodx.git"
 $Commit = "9b212edad4dde9bca2b823b1e045b712b1a8d854"
 $BridgeUrl = "https://github.com/NIGos/dlss5-bridge/releases/download/v1.4.12/dlss5-bridge.addon64"
 $BridgeHash = "4F2ACECC1026AE89AC0B92767BE66CEEA2662AD0EF88710B89C7DA7840D548D4"
+$ReShadeRepo = "https://github.com/crosire/reshade.git"
 
 if (Test-Path -LiteralPath $WorkDir) { Remove-Item -LiteralPath $WorkDir -Recurse -Force }
 New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
@@ -61,6 +62,7 @@ New-Item -ItemType Directory -Path $stage -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $stage "tools") -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $stage "config") -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $stage "licenses") -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $stage "presets") -Force | Out-Null
 
 Copy-Item $built.FullName (Join-Path $stage "SecretEMKO.addon64") -Force
 
@@ -72,12 +74,31 @@ if ($actualBridge -ine $BridgeHash) {
 }
 Copy-Item $bridge (Join-Path $stage "dlss5-bridge.addon64") -Force
 
+Write-Host "Building current official ReShade swapchain_override add-on..."
+$reshadeRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/crosire/reshade/releases/latest" -Headers @{"User-Agent"="SecretEMKO-v2-builder"}
+$reshadeTag = $reshadeRelease.tag_name
+if (-not $reshadeTag) { throw "Could not determine latest ReShade release tag" }
+$reshadeSrc = Join-Path $WorkDir "reshade"
+& git clone --depth 1 --branch $reshadeTag $ReShadeRepo $reshadeSrc
+if ($LASTEXITCODE -ne 0) { throw "ReShade source clone failed for tag $reshadeTag" }
+$reshadeCommit = (& git -C $reshadeSrc rev-parse HEAD).Trim()
+$swapProject = Join-Path $reshadeSrc "examples\16-swapchain_override\swapchain_override.vcxproj"
+& msbuild $swapProject /m /p:Configuration=Release /p:Platform=x64
+if ($LASTEXITCODE -ne 0) { throw "swapchain_override build failed" }
+$swapchain = Get-ChildItem -LiteralPath $reshadeSrc -Recurse -File -Filter "swapchain_override.addon64" | Select-Object -First 1
+if (-not $swapchain) { throw "swapchain_override.addon64 not found after ReShade example build" }
+Copy-Item $swapchain.FullName (Join-Path $stage "swapchain_override.addon64") -Force
+
 Copy-Item (Join-Path $RepoRoot "README.md") (Join-Path $stage "README.md") -Force
 Copy-Item (Join-Path $RepoRoot "VERSIONS.json") (Join-Path $stage "VERSIONS.json") -Force
 Copy-Item (Join-Path $RepoRoot "LICENSE") (Join-Path $stage "LICENSE") -Force
 Copy-Item (Join-Path $RepoRoot "THIRD_PARTY_NOTICES.md") (Join-Path $stage "THIRD_PARTY_NOTICES.md") -Force
 Copy-Item (Join-Path $RepoRoot "config\dlss5-bridge.cfg") (Join-Path $stage "config\dlss5-bridge.cfg") -Force
+Copy-Item (Join-Path $RepoRoot "config\ReShade.ini") (Join-Path $stage "config\ReShade.ini") -Force
+Copy-Item (Join-Path $RepoRoot "presets\Secret_Emko_Main.ini") (Join-Path $stage "presets\Secret_Emko_Main.ini") -Force
+Copy-Item (Join-Path $RepoRoot "presets\Secret_Emko_Stream.ini") (Join-Path $stage "presets\Secret_Emko_Stream.ini") -Force
 Copy-Item (Join-Path $RepoRoot "tools\Install-SecretEMKO.ps1") (Join-Path $stage "tools\Install-SecretEMKO.ps1") -Force
+Copy-Item (Join-Path $RepoRoot "tools\Install-ReShadeAssets.ps1") (Join-Path $stage "tools\Install-ReShadeAssets.ps1") -Force
 Copy-Item (Join-Path $RepoRoot "tools\Uninstall-SecretEMKO.ps1") (Join-Path $stage "tools\Uninstall-SecretEMKO.ps1") -Force
 Copy-Item (Join-Path $RepoRoot "INSTALL_SECRET_EMKO.bat") (Join-Path $stage "INSTALL_SECRET_EMKO.bat") -Force
 Copy-Item (Join-Path $RepoRoot "UNINSTALL_SECRET_EMKO.bat") (Join-Path $stage "UNINSTALL_SECRET_EMKO.bat") -Force
@@ -99,6 +120,9 @@ $manifest = [ordered]@{
     renodx_commit = $Commit
     bridge_version = "1.4.12"
     bridge_sha256 = $BridgeHash
+    reshade_release_tag = $reshadeTag
+    reshade_source_commit = $reshadeCommit
+    swapchain_override_sha256 = (Get-FileHash -LiteralPath (Join-Path $stage "swapchain_override.addon64") -Algorithm SHA256).Hash
     addon_sha256 = (Get-FileHash -LiteralPath (Join-Path $stage "SecretEMKO.addon64") -Algorithm SHA256).Hash
 }
 $manifest | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $stage "BUILD-MANIFEST.json") -Encoding UTF8
