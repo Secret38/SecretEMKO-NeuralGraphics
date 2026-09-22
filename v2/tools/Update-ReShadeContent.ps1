@@ -69,7 +69,7 @@ function Parse-Catalog([string]$Text) {
 }
 
 function Get-PresetEffects([string[]]$PresetPaths) {
-    $effects = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+    $effects = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($preset in $PresetPaths) {
         if (-not (Test-Path -LiteralPath $preset)) { throw "Preset missing: $preset" }
         $tech = Get-Content -LiteralPath $preset | Where-Object { $_ -like "Techniques=*" } | Select-Object -First 1
@@ -170,8 +170,8 @@ function Install-EffectPackage([object]$Package, [string]$Target, [string]$Work)
 }
 
 function Find-SelectedPackages([object[]]$Packages, [string[]]$Effects) {
-    $selected = New-Object System.Collections.Generic.Dictionary[string,object] ([System.StringComparer]::OrdinalIgnoreCase)
-    $unresolved = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+    $selected = [System.Collections.Generic.Dictionary[string,object]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $unresolved = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 
     $standard = $Packages | Where-Object { $_.Section -eq "00" } | Select-Object -First 1
     if ($standard) { $selected[$standard.Section] = $standard }
