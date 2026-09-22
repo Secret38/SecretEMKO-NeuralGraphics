@@ -5,11 +5,21 @@ import sys
 ROOT = Path(sys.argv[1]).resolve()
 BUILDS = [1604,2060,2189,2372,2545,2612,2699,2802,2944,3095,3258,3407,3570,3717,3751,3788,3889]
 
+def _encoding(path):
+    data = path.read_bytes()[:4]
+    if data.startswith(b"\\xff\\xfe") or data.startswith(b"\\xfe\\xff"):
+        return "utf-16"
+    if data.startswith(b"\\xef\\xbb\\xbf"):
+        return "utf-8-sig"
+    return "utf-8"
+
 def read(rel):
-    return (ROOT / rel).read_text(encoding="utf-8-sig")
+    p = ROOT / rel
+    return p.read_text(encoding=_encoding(p))
 
 def write(rel, text):
-    (ROOT / rel).write_text(text, encoding="utf-8-sig")
+    p = ROOT / rel
+    p.write_text(text, encoding=_encoding(p))
 
 def replace_exact(rel, old, new, count=1):
     text = read(rel)
