@@ -311,10 +311,12 @@ try {
     if (-not $SkipAddon -and $CoreVariant -eq "Addon") { $addonUrl = Install-SwapchainOverride $TargetDirectory $Architecture }
 
     $missingLocal = @()
+    $searchRoots = @((Join-Path $TargetDirectory "reshade-shaders\Shaders"))
+    if ($LegacyContentRoot) { $searchRoots += (Join-Path $LegacyContentRoot "reshade-shaders\Shaders") }
     foreach ($effect in $unresolved) {
         $found = $false
-        foreach ($root in @((Join-Path $TargetDirectory "reshade-shaders\Shaders"), (Join-Path $LegacyContentRoot "reshade-shaders\Shaders"))) {
-            if ($root -and (Test-Path -LiteralPath $root) -and (Get-ChildItem -LiteralPath $root -Recurse -File -Filter $effect -ErrorAction SilentlyContinue | Select-Object -First 1)) { $found = $true; break }
+        foreach ($root in $searchRoots) {
+            if ((Test-Path -LiteralPath $root) -and (Get-ChildItem -LiteralPath $root -Recurse -File -Filter $effect -ErrorAction SilentlyContinue | Select-Object -First 1)) { $found = $true; break }
         }
         if (-not $found) { $missingLocal += $effect }
     }
