@@ -3,7 +3,7 @@ name: Build Secret EMKO v2 RenoDX
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ main, v2-main-reshade-presets ]
     paths:
       - "v2/**"
       - ".github/workflows/build-v2-renodx.yml"
@@ -36,8 +36,13 @@ jobs:
           $required = @(
             "SecretEMKO.addon64",
             "dlss5-bridge.addon64",
+            "swapchain_override.addon64",
             "INSTALL_SECRET_EMKO.bat",
             "tools\Install-SecretEMKO.ps1",
+            "tools\Install-ReShadeAssets.ps1",
+            "presets\Secret_Emko_Main.ini",
+            "presets\Secret_Emko_Stream.ini",
+            "config\ReShade.ini",
             "README.md",
             "VERSIONS.json"
           )
@@ -47,6 +52,7 @@ jobs:
           }
           Get-FileHash "$stage\SecretEMKO.addon64" -Algorithm SHA256
           Get-FileHash "$stage\dlss5-bridge.addon64" -Algorithm SHA256
+          Get-FileHash "$stage\swapchain_override.addon64" -Algorithm SHA256
 
       - name: Upload v2 package
         uses: actions/upload-artifact@v4
