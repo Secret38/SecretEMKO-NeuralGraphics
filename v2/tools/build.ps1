@@ -34,6 +34,14 @@ New-Item -ItemType Directory -Path $addonDir -Force | Out-Null
 Copy-Item (Join-Path $RepoRoot "src\addon.cpp") (Join-Path $addonDir "addon.cpp") -Force
 Copy-Item (Join-Path $RepoRoot "src\metadata.json") (Join-Path $addonDir "metadata.json") -Force
 
+Write-Host "Preparing RenoDX shader toolchain..."
+Push-Location $src
+try {
+    & powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File ".\scripts\setup-dev-env.ps1" -Update -Tools dxc,slang
+    if ($LASTEXITCODE -ne 0) { throw "RenoDX dev tool setup failed" }
+}
+finally { Pop-Location }
+
 $buildDir = Join-Path $WorkDir "build"
 & cmake -S $src -B $buildDir -A x64 -DRENODX_BUILD_TESTS=OFF
 if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
