@@ -1,0 +1,11 @@
+{
+  "$schema": "https://cdn.jsdelivr.net/gh/clshortfuse/renodx/renodx-metadata-schema.json",
+  "id": "secretemko",
+  "title": "SECRET EMKO Neural Graphics",
+  "maintainers": ["Secret EMKO"],
+  "status": "experimental",
+  "tags": ["FiveM", "GTA V Legacy", "DLSS", "Neural Rendering"],
+  "deploy": {
+    "architecture": ["x64"]
+  }
+}
