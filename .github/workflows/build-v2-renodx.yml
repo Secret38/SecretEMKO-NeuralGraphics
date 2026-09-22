@@ -148,10 +148,38 @@ jobs:
           if ($backup.Count -ne 1) { throw "Expected exactly one isolated original plugins backup" }
           if (-not (Test-Path (Join-Path $backup[0].FullName "existing-user-plugin.txt"))) { throw "Original plugin was not preserved in backup" }
 
+          # Re-run the installer to verify idempotent in-place updates.
+          & (Join-Path $stage "tools\Install-SecretEMKO.ps1") -FiveMPath $fake -Mode RPVisual -NonInteractive
+          $backupAfterUpdate = @(Get-ChildItem -LiteralPath $app -Directory -Filter "plugins.before-secret-emko.*")
+          if ($backupAfterUpdate.Count -ne 1) { throw "Second install created another original plugins backup" }
+          if (-not (Test-Path (Join-Path $active "reshade-shaders\Shaders\UserCustom.fx"))) { throw "User shader missing after in-place update" }
+
           & (Join-Path $stage "tools\Uninstall-SecretEMKO.ps1") -FiveMPath $fake -NonInteractive
 
           if (-not (Test-Path (Join-Path $active "existing-user-plugin.txt"))) { throw "Original plugins folder was not restored by uninstall" }
           if (Test-Path (Join-Path $active "Secret_Emko_Main.ini")) { throw "RP Visual environment remained active after restore" }
+
+      - name: End-to-end missing plugins creation test
+        shell: powershell
+        run: |
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc2").Path
+          $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Missing Plugins Test"
+          $app = Join-Path $fake "FiveM.app"
+          New-Item -ItemType Directory -Path $app -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $app "CitizenFX.ini") -Value "[Game]"
+
+          $plugins = Join-Path $app "plugins"
+          if (Test-Path $plugins) { throw "Test precondition failed: plugins already exists" }
+
+          & (Join-Path $stage "tools\Install-SecretEMKO.ps1") -FiveMPath $fake -Mode RPVisual -NonInteractive
+
+          if (-not (Test-Path $plugins)) { throw "Installer did not create missing plugins folder" }
+          if (-not (Test-Path (Join-Path $plugins "dxgi.dll"))) { throw "ReShade missing from newly created plugins folder" }
+          if (-not (Test-Path (Join-Path $plugins "Secret_Emko_Main.ini"))) { throw "Main preset missing from newly created plugins folder" }
+
+          & (Join-Path $stage "tools\Uninstall-SecretEMKO.ps1") -FiveMPath $fake -NonInteractive
+
+          if (Test-Path $plugins) { throw "Uninstall should leave no active plugins folder when none existed before install" }
 
       - name: Reject unsupported Full Neural hardware before modification
         shell: powershell
