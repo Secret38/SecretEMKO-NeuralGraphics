@@ -2,6 +2,7 @@
 param(
     [string]$PluginsPath = "$env:LOCALAPPDATA\FiveM\FiveM.app\plugins",
     [switch]$SkipStreamline,
+    [switch]$SkipReShadeAssets,
     [switch]$Force
 )
 
@@ -23,7 +24,6 @@ $Urls = @{
     DlssNr = "https://github.com/RankFTW/rhi-repo/releases/download/dlssnr-310.8.0/nvngx_dlssnr_310.8.0.zip"
     DlssSr = "https://github.com/RankFTW/rhi-repo/releases/download/dlss-310.9.1/nvngx_dlss_310.9.1.zip"
     Streamline = "https://github.com/NVIDIA-RTX/Streamline/releases/download/v2.14.1/streamline-sdk-v2.14.1.zip"
-    ReShade = "https://reshade.me/downloads/ReShade_Setup_6.8.0_Addon.exe"
 }
 $Hashes = @{
     RenoDX = "D6E356D01B429AF6288F488A4926C44F1D779A7D4586EE8C79D04D3A09A536E6"
@@ -32,6 +32,24 @@ $Hashes = @{
     Streamline = "92C4D954631A1710DA86CA3FA8D5034F2B9503838C95FC4AE977AE149319781B"
 }
 $Rtx50NrDllHash = "E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E"
+
+function Get-LatestReShadeVersion {
+    $home = Invoke-WebRequest -UseBasicParsing -Uri "https://reshade.me/" -Headers @{"User-Agent"="SecretEMKO-v2"}
+    if ($home.Content -notmatch 'Version\s+([0-9]+\.[0-9]+\.[0-9]+)') {
+        throw "Could not determine the current ReShade version from reshade.me."
+    }
+    return $Matches[1]
+}
+
+function Get-ReShadeAddonSetup {
+    $version = Get-LatestReShadeVersion
+    $setup = Join-Path $Cache ("ReShade_Setup_{0}_Addon.exe" -f $version)
+    $url = "https://reshade.me/downloads/ReShade_Setup_${version}_Addon.exe"
+    if (-not (Test-Path -LiteralPath $setup)) {
+        Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $setup -Headers @{"User-Agent"="SecretEMKO-v2"}
+    }
+    return $setup
+}
 
 function Banner {
     Write-Host ""
@@ -173,20 +191,18 @@ Ensure-Folder $LicenseDir
 Step "Checking ReShade"
 $reshade = Join-Path $PluginsPath "dxgi.dll"
 if (-not (Test-Path -LiteralPath $reshade)) {
-    $setup = Join-Path $Cache "ReShade_Setup_6.8.0_Addon.exe"
-    Warn "No plugins\dxgi.dll was found. SECRET EMKO requires ReShade 6.8+ Full Add-on Support."
-    Write-Host "   The official installer will be downloaded and opened. Install ReShade Full Add-on Support for FiveM, then run this installer again."
-    Invoke-WebRequest -UseBasicParsing -Uri $Urls.ReShade -OutFile $setup
+    $setup = Get-ReShadeAddonSetup
+    Warn "No plugins\dxgi.dll was found. SECRET EMKO requires current ReShade Full Add-on Support."
+    Write-Host "   The current official Add-on installer will be opened. Install it for FiveM, then run SECRET EMKO again."
     Start-Process -FilePath $setup
     exit 2
 }
 $reshadeBytes = [IO.File]::ReadAllBytes($reshade)
 $reshadeAscii = [Text.Encoding]::ASCII.GetString($reshadeBytes)
 if (-not $reshadeAscii.Contains("ReShadeRegisterAddon")) {
-    $setup = Join-Path $Cache "ReShade_Setup_6.8.0_Addon.exe"
+    $setup = Get-ReShadeAddonSetup
     Warn "The existing dxgi.dll does not expose ReShadeRegisterAddon and appears to be the standard build."
-    Write-Host "   SECRET EMKO requires ReShade Full Add-on Support. The official installer will be opened; install the Add-on build and then run SECRET EMKO again."
-    Invoke-WebRequest -UseBasicParsing -Uri $Urls.ReShade -OutFile $setup
+    Write-Host "   SECRET EMKO requires Full Add-on Support. The current official Add-on installer will be opened."
     Start-Process -FilePath $setup
     exit 3
 }
@@ -197,7 +213,15 @@ $reshadeIni = Join-Path $PluginsPath "ReShade.ini"
 $bridgeCfg = Join-Path $PluginsPath "dlss5-bridge.cfg"
 Backup-IfExists $reshadeIni
 Backup-IfExists $bridgeCfg
+Backup-IfExists (Join-Path $PluginsPath "Secret_Emko_Main.ini")
+Backup-IfExists (Join-Path $PluginsPath "Secret_Emko_Stream.ini")
 Ok "Backup root: $Backup"
+
+if (-not $SkipReShadeAssets) {
+    Step "Installing SECRET EMKO ReShade presets and current official shader packages"
+    & (Join-Path $Root "tools\Install-ReShadeAssets.ps1") -PluginsPath $PluginsPath -Root $Root
+    if ($LASTEXITCODE -ne 0) { throw "ReShade preset/effect installation failed with exit code $LASTEXITCODE" }
+}
 
 Step "Installing SECRET EMKO and DLSS 5 Bridge"
 Copy-Managed (Join-Path $Root "SecretEMKO.addon64") "SecretEMKO.addon64"
@@ -306,7 +330,10 @@ $managed = @(
     "sl.pcl.dll",
     "sl.nis.dll",
     "nvngx_dlssg.dll",
-    "dlss5-bridge.cfg"
+    "dlss5-bridge.cfg",
+    "Secret_Emko_Main.ini",
+    "Secret_Emko_Stream.ini",
+    "swapchain_override.addon64"
 )
 $state = [ordered]@{
     product = "SECRET EMKO Neural Graphics"
@@ -328,6 +355,8 @@ $required = @(
     "nvngx_dlssnr.dll",
     "nvngx_dlss.dll",
     "ReShade.ini",
+    "Secret_Emko_Main.ini",
+    "Secret_Emko_Stream.ini",
     "dlss5-bridge.cfg"
 )
 $missing = @()
