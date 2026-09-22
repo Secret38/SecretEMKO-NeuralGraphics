@@ -1,6 +1,6 @@
 {
   "product": "SECRET EMKO Neural Graphics",
-  "version": "2.0.0-preview1",
+  "version": "2.0.0-preview2",
   "verified_on": "2026-09-22",
   "components": {
     "renodx_framework": {
@@ -13,16 +13,28 @@
       "distribution": "official Full Add-on Support installer; not redistributed"
     },
     "dlss5_bridge": {
-      "version": "1.4.12",
+      "version": "1.4.13-pre8",
+      "channel": "latest prerelease",
       "asset": "dlss5-bridge.addon64",
-      "sha256": "4F2ACECC1026AE89AC0B92767BE66CEEA2662AD0EF88710B89C7DA7840D548D4",
+      "sha256": "C4C8B5BC4B26B2B3F3BF2767CDB708546D62F7D0BBB63D24E940C736DA9EFE26",
+      "source_commit": "ecd1b00674020a1e8c76a9cb653a1a21d11676a0",
       "license": "MIT"
     },
     "renodx_dlss5_consumer": {
-      "version": "4.70",
-      "source": "RankFTW/rhi-repo release mirror used by DLSS5-Feeder",
-      "package_sha256": "D6E356D01B429AF6288F488A4926C44F1D779A7D4586EE8C79D04D3A09A536E6",
-      "redistribution": "downloaded at install time; not bundled"
+      "default_policy": "Auto",
+      "latest": {
+        "version": "6.5.3",
+        "source": "RankFTW/rhi-repo external release mirror",
+        "package_sha256": "553B1619B9E5DDFBCB4EBC7F2F3BFFFF9256A48A25B988F4817F5C63F4CAA1DE"
+      },
+      "compatibility": {
+        "version": "4.55",
+        "reason": "Auto-selected for NVIDIA driver 616.64+ because current community reports document faults on newer RenoDX DLSS5 consumers on this driver branch.",
+        "source": "RankFTW/rhi-repo external release mirror",
+        "package_sha256": "15481C492DB76682E9A88917E7F78897351ECF088BFAE9BCA74A0C5B74DDD033"
+      },
+      "redistribution": "not bundled; downloaded only during local install after provenance notice",
+      "license_status": "separate binary; no source/license is published in the public RenoDX main repository"
     },
     "nvidia_dlss_sr": {
       "version": "310.9.1",
