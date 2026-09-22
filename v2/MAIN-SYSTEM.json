@@ -1,7 +1,30 @@
 {
   "product": "SECRET EMKO Neural Graphics",
-  "version": "2.0.0-rc1",
+  "version": "2.0.0-rc2",
   "role": "main-system",
+  "installer": {
+    "target": "FiveM GTA V Legacy x64",
+    "path_resolution": [
+      "explicit parameter",
+      "standard LocalAppData path",
+      "Windows FiveM shortcut discovery",
+      "interactive FiveM.exe picker"
+    ],
+    "existing_plugins_default": "isolate",
+    "isolation_behavior": "rename existing plugins to plugins.before-secret-emko.<timestamp>, create a clean active plugins folder, migrate only compatible ReShade loader and reshade-shaders content",
+    "rollback": "restore the original plugins folder automatically when a first-time isolated install fails",
+    "uninstall": "snapshot the SECRET EMKO environment, then restore the original plugins folder when one existed",
+    "enhanced": "fail-closed"
+  },
+  "hardware": {
+    "full_neural": "GeForce RTX 50 Series",
+    "other_gpus": "visual-compatibility mode",
+    "forced_override": "ForceNeuralStack exists for expert testing but is not a support claim"
+  },
+  "multiplayer": {
+    "policy": "respect FiveM server plugin policy, Pure Mode, anti-cheat and ReShade restrictions",
+    "bypass": false
+  },
   "reshade": {
     "core": {
       "source": "https://reshade.me/",
@@ -10,7 +33,7 @@
     },
     "effects": {
       "catalog": "https://raw.githubusercontent.com/crosire/reshade-shaders/list/EffectPackages.ini",
-      "policy": "latest packages referenced by shipped presets"
+      "policy": "latest packages referenced by shipped presets; unavailable external techniques are disabled locally"
     },
     "addons": {
       "catalog": "https://raw.githubusercontent.com/crosire/reshade-shaders/list/Addons.ini",

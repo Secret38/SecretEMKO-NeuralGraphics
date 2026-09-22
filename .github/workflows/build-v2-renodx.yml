@@ -3,7 +3,12 @@ name: Build Secret EMKO v2 RenoDX
 on:
   workflow_dispatch:
   push:
-    branches: [ main, complete-v2-main-system ]
+    branches: [ main ]
+    paths:
+      - "v2/**"
+      - ".github/workflows/build-v2-renodx.yml"
+  pull_request:
+    branches: [ main ]
     paths:
       - "v2/**"
       - ".github/workflows/build-v2-renodx.yml"
@@ -24,11 +29,12 @@ jobs:
           git --version
           cmake --version
 
-      - name: Validate PowerShell + live ReShade catalogs
+      - name: Validate PowerShell scripts
         shell: powershell
         run: |
           $scripts = @(
             ".\v2\tools\Install-SecretEMKO.ps1",
+            ".\v2\tools\Uninstall-SecretEMKO.ps1",
             ".\v2\tools\Update-ReShadeContent.ps1",
             ".\v2\tools\build.ps1"
           )
@@ -38,7 +44,21 @@ jobs:
             [void][System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$tokens, [ref]$errors)
             if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
           }
-          .\v2\tools\Update-ReShadeContent.ps1 -TargetDirectory "$env:RUNNER_TEMP\SecretEmkoDryRun" -DryRun -SkipCoreCheck
+
+      - name: Validate live ReShade packages
+        shell: powershell
+        run: |
+          $target = "$env:RUNNER_TEMP\SecretEmkoReShadeIntegration"
+          .\v2\tools\Update-ReShadeContent.ps1 -TargetDirectory $target -SkipCoreCheck
+          $required = @(
+            "ReShade.ini",
+            "swapchain_override.addon64",
+            "Secret_Emko_Main.ini",
+            "Secret_Emko_Stream.ini"
+          )
+          foreach ($name in $required) {
+            if (-not (Test-Path (Join-Path $target $name))) { throw "Missing ReShade integration output: $name" }
+          }
 
       - name: Build RenoDX-native addon and package
         shell: powershell
@@ -48,17 +68,20 @@ jobs:
       - name: Verify release files
         shell: powershell
         run: |
-          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc1"
+          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc2"
           $required = @(
             "SecretEMKO.addon64",
             "dlss5-bridge.addon64",
             "INSTALL_SECRET_EMKO.bat",
+            "UNINSTALL_SECRET_EMKO.bat",
             "tools\Install-SecretEMKO.ps1",
+            "tools\Uninstall-SecretEMKO.ps1",
             "tools\Update-ReShadeContent.ps1",
             "config\ReShade.SecretEMKO.ini",
             "presets\Secret_Emko_Main.ini",
             "presets\Secret_Emko_Stream.ini",
             "MAIN-SYSTEM.json",
+            "COMPATIBILITY.md",
             "README.md",
             "VERSIONS.json"
           )
@@ -69,11 +92,43 @@ jobs:
           Get-FileHash "$stage\SecretEMKO.addon64" -Algorithm SHA256
           Get-FileHash "$stage\dlss5-bridge.addon64" -Algorithm SHA256
 
+      - name: End-to-end isolated FiveM installer test
+        shell: powershell
+        run: |
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc2").Path
+          $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO-FiveM-Legacy"
+          $app = Join-Path $fake "FiveM.app"
+          $oldPlugins = Join-Path $app "plugins"
+
+          New-Item -ItemType Directory -Path $oldPlugins -Force | Out-Null
+          $citizen = "[Game]" + [Environment]::NewLine + "IVPath=C:\Fake\GTAV"
+          Set-Content -LiteralPath (Join-Path $app "CitizenFX.ini") -Value $citizen
+          Set-Content -LiteralPath (Join-Path $oldPlugins "existing-user-plugin.txt") -Value "preserve-me"
+          New-Item -ItemType Directory -Path (Join-Path $oldPlugins "reshade-shaders\Shaders") -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $oldPlugins "reshade-shaders\Shaders\UserCustom.fx") -Value "// user shader"
+
+          & (Join-Path $stage "tools\Install-SecretEMKO.ps1") -FiveMPath $fake -NonInteractive
+
+          $active = Join-Path $app "plugins"
+          if (-not (Test-Path (Join-Path $active "SecretEMKO.addon64"))) { throw "SecretEMKO.addon64 missing after install" }
+          if (-not (Test-Path (Join-Path $active "dxgi.dll"))) { throw "ReShade dxgi.dll missing after install" }
+          if (Test-Path (Join-Path $active "existing-user-plugin.txt")) { throw "Old arbitrary plugin leaked into isolated active plugins folder" }
+          if (-not (Test-Path (Join-Path $active "reshade-shaders\Shaders\UserCustom.fx"))) { throw "Existing user shader library was not migrated" }
+
+          $backup = @(Get-ChildItem -LiteralPath $app -Directory -Filter "plugins.before-secret-emko.*")
+          if ($backup.Count -ne 1) { throw "Expected exactly one isolated original plugins backup" }
+          if (-not (Test-Path (Join-Path $backup[0].FullName "existing-user-plugin.txt"))) { throw "Original plugin was not preserved in backup" }
+
+          & (Join-Path $stage "tools\Uninstall-SecretEMKO.ps1") -FiveMPath $fake -NonInteractive
+
+          if (-not (Test-Path (Join-Path $active "existing-user-plugin.txt"))) { throw "Original plugins folder was not restored by uninstall" }
+          if (Test-Path (Join-Path $active "SecretEMKO.addon64")) { throw "SECRET EMKO remained active after restore" }
+
       - name: Upload v2 package
         uses: actions/upload-artifact@v4
         with:
-          name: SecretEMKO-NeuralGraphics-v2.0.0-rc1
+          name: SecretEMKO-NeuralGraphics-v2.0.0-rc2
           path: |
-            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc1/**
-            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc1.zip
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc2/**
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc2.zip
           if-no-files-found: error
