@@ -44,5 +44,6 @@
       3
     ],
     "dynamic_mfg": false
-  }
+  },
+  "ci": "github-actions/windows-2022"
 }
