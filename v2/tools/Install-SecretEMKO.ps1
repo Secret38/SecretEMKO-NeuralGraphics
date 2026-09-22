@@ -261,8 +261,8 @@ function Test-ReShadeFullAddon([string]$Directory) {
 }
 
 function Get-LatestReShadeSetup([bool]$FullAddon) {
-    $home = Invoke-WebRequest -UseBasicParsing -Uri "https://reshade.me/" -Headers @{ "User-Agent" = "SecretEMKO-v2" }
-    if ($home.Content -notmatch 'Version\s+([0-9]+\.[0-9]+\.[0-9]+)') {
+    $landingPage = Invoke-WebRequest -UseBasicParsing -Uri "https://reshade.me/" -Headers @{ "User-Agent" = "SecretEMKO-v2" }
+    if ($landingPage.Content -notmatch 'Version\s+([0-9]+\.[0-9]+\.[0-9]+)') {
         throw "Could not resolve the current ReShade version from reshade.me."
     }
     $version = $Matches[1]
