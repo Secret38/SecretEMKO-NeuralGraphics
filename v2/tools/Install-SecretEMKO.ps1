@@ -3,7 +3,7 @@ param(
     [string]$PluginsPath = "$env:LOCALAPPDATA\FiveM\FiveM.app\plugins",
     [ValidateSet("Auto","Latest","Compatibility")]
     [string]$ConsumerChannel = "Auto",
-    [switch]$SkipStreamline,
+    [switch]$InstallStreamlinePreview,
     [switch]$Force
 )
 
@@ -289,8 +289,9 @@ $srDll = Find-RequiredFile $srExtract "nvngx_dlss.dll"
 Assert-NvidiaSignature $srDll
 Copy-Managed $srDll "nvngx_dlss.dll"
 
-if (-not $SkipStreamline) {
-    Step "Downloading NVIDIA Streamline 2.14.1"
+if ($InstallStreamlinePreview) {
+    Step "Downloading optional NVIDIA Streamline 2.14.1"
+    Warn "FiveM Frame Generation is not armed in preview2. Streamline is optional and is being staged only because -InstallStreamlinePreview was requested."
     $slZip = Join-Path $Cache "streamline-sdk-v2.14.1.zip"
     Download-Verified $Urls.Streamline $slZip $Hashes.Streamline
     $slExtract = Join-Path $Cache "streamline-sdk-v2.14.1"
@@ -363,17 +364,21 @@ $managed = @(
     "renodx-dlss5.addon64",
     "nvngx_dlssnr.dll",
     "nvngx_dlss.dll",
-    "sl.interposer.dll",
-    "sl.common.dll",
-    "sl.dlss.dll",
-    "sl.dlss_g.dll",
-    "sl.dlss_nr.dll",
-    "sl.reflex.dll",
-    "sl.pcl.dll",
-    "sl.nis.dll",
-    "nvngx_dlssg.dll",
     "dlss5-bridge.cfg"
 )
+if ($InstallStreamlinePreview) {
+    $managed += @(
+        "sl.interposer.dll",
+        "sl.common.dll",
+        "sl.dlss.dll",
+        "sl.dlss_g.dll",
+        "sl.dlss_nr.dll",
+        "sl.reflex.dll",
+        "sl.pcl.dll",
+        "sl.nis.dll",
+        "nvngx_dlssg.dll"
+    )
+}
 $state = [ordered]@{
     product = "SECRET EMKO Neural Graphics"
     version = "2.0.0-preview2"
@@ -421,7 +426,10 @@ Write-Host " Start FiveM, open ReShade, then Add-ons -> SECRET EMKO Neural Graph
 Write-Host " Recommended first profile: Enhanced." -ForegroundColor White
 Write-Host ""
 Write-Host " Keep ReShade.log and dlss5-bridge.log after the first test." -ForegroundColor Gray
-Write-Host " Frame Generation is intentionally not armed in preview1." -ForegroundColor Yellow
+Write-Host " Frame Generation is intentionally not armed in preview2." -ForegroundColor Yellow
+if (-not $InstallStreamlinePreview) {
+    Write-Host " Streamline was intentionally NOT installed because FG is not active." -ForegroundColor Gray
+}
 Write-Host "===============================================================" -ForegroundColor DarkGray
 ) { $end=$i; break }
     }
