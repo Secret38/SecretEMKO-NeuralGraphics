@@ -75,9 +75,12 @@ if ($actualBridge -ine $BridgeHash) {
 Copy-Item $bridge (Join-Path $stage "dlss5-bridge.addon64") -Force
 
 Write-Host "Building current official ReShade swapchain_override add-on..."
-$reshadeRelease = Invoke-RestMethod -Uri "https://api.github.com/repos/crosire/reshade/releases/latest" -Headers @{"User-Agent"="SecretEMKO-v2-builder"}
-$reshadeTag = $reshadeRelease.tag_name
-if (-not $reshadeTag) { throw "Could not determine latest ReShade release tag" }
+$reshadeHome = Invoke-WebRequest -UseBasicParsing -Uri "https://reshade.me/" -Headers @{"User-Agent"="SecretEMKO-v2-builder"}
+if ($reshadeHome.Content -notmatch 'Version\s+([0-9]+\.[0-9]+\.[0-9]+)') {
+    throw "Could not determine current ReShade version from reshade.me"
+}
+$reshadeVersion = $Matches[1]
+$reshadeTag = "v$reshadeVersion"
 $reshadeSrc = Join-Path $WorkDir "reshade"
 & git clone --depth 1 --branch $reshadeTag $ReShadeRepo $reshadeSrc
 if ($LASTEXITCODE -ne 0) { throw "ReShade source clone failed for tag $reshadeTag" }
