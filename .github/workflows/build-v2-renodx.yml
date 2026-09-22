@@ -54,6 +54,11 @@ jobs:
             "dlss5-bridge.addon64",
             "INSTALL_SECRET_EMKO.bat",
             "tools\Install-SecretEMKO.ps1",
+            "tools\Update-ReShadeContent.ps1",
+            "config\ReShade.SecretEMKO.ini",
+            "presets\Secret_Emko_Main.ini",
+            "presets\Secret_Emko_Stream.ini",
+            "MAIN-SYSTEM.json",
             "README.md",
             "VERSIONS.json"
           )
