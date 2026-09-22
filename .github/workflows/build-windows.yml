@@ -1,0 +1,51 @@
+name: Build Secret EMKO FiveM Legacy
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "tools/build.ps1"
+      - "tools/patch_upstream.py"
+      - ".github/workflows/build-windows.yml"
+      - "project-manifest.json"
+      - "THIRD_PARTY_NOTICES.txt"
+
+jobs:
+  build:
+    runs-on: windows-2022
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout Secret EMKO
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        shell: powershell
+        run: |
+          git --version
+          python --version
+
+      - name: Build x64 ASI package
+        shell: powershell
+        run: |
+          .\tools\build.ps1
+
+      - name: Verify output
+        shell: powershell
+        run: |
+          $asi = ".\output\SecretEMKO-NeuralGraphics-v1.1.0-FiveM-Legacy\SecretEMKO.asi"
+          if (-not (Test-Path $asi)) { throw "SecretEMKO.asi missing" }
+          Get-Item $asi | Format-List Name,Length,LastWriteTime
+          Get-FileHash $asi -Algorithm SHA256
+
+      - name: Upload compiled package
+        uses: actions/upload-artifact@v4
+        with:
+          name: SecretEMKO-NeuralGraphics-v1.1.0-FiveM-Legacy
+          path: |
+            output/SecretEMKO-NeuralGraphics-v1.1.0-FiveM-Legacy/**
+            output/SecretEMKO-NeuralGraphics-v1.1.0-FiveM-Legacy.zip
+          if-no-files-found: error
