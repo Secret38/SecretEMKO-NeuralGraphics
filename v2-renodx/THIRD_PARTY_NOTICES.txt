@@ -1,0 +1,38 @@
+SECRET EMKO Neural Graphics v2 - Third-party notices
+======================================================
+
+SECRET EMKO visible branding applies to the project-specific integration,
+configuration, UI, presets and packaging. It does not replace third-party
+copyright or technology ownership.
+
+RenoDX
+------
+Project: https://github.com/clshortfuse/renodx
+Pinned source: 9b212edad4dde9bca2b823b1e045b712b1a8d854
+License: MIT
+Copyright (c) Carlos Lopez Jr. and contributors.
+
+ReShade
+-------
+Project: https://github.com/crosire/reshade
+License: BSD 3-Clause.
+ReShade itself is NOT redistributed in this package. Use the official
+full-add-on-support build from reshade.me.
+
+DLSS 5 Bridge
+-------------
+Project: https://github.com/NIGos/dlss5-bridge
+Pinned source: d1cc508a7097534c5c0e01a868ebe3b6657b932b
+License: MIT plus bundled third-party notices.
+
+NVIDIA DLSS / Neural Rendering / Streamline
+-------------------------------------------
+NVIDIA proprietary runtime components remain subject to NVIDIA's terms.
+SECRET EMKO does not relicense or rebrand them. Public packages do not include
+nvngx_dlssnr.dll or nvngx_dlss.dll. The optional installer path downloads
+Streamline 2.14.1 directly from NVIDIA only after explicit licence acceptance.
+
+PureDark
+--------
+No PureDark proprietary source, authentication mechanism, Patreon check,
+paid asset or copied proprietary runtime is used in the v2 source tree.
