@@ -37,9 +37,11 @@ The installer targets:
 %LOCALAPPDATA%\FiveM\FiveM.app\plugins
 ```
 
-It preserves the existing ReShade `dxgi.dll`, backs up files it manages, installs the Secret EMKO/Bridge add-ons, downloads the pinned neural consumer and NVIDIA runtimes, writes GTA/FiveM bridge defaults, and verifies hashes.
+It preserves the existing ReShade `dxgi.dll`, backs up files it manages, installs the Secret EMKO/Bridge add-ons, downloads the pinned neural consumer and NVIDIA runtimes, writes GTA/FiveM bridge defaults, installs the SECRET EMKO ReShade presets, updates their required public shader packages from ReShade's official package index, and verifies the managed runtime files.
 
-After installation, start FiveM and open ReShade. In **Add-ons**, choose **SECRET EMKO Neural Graphics** and start with **Enhanced**.
+The release also includes `swapchain_override.addon64`, compiled during the build from the official `crosire/reshade` source matching the latest official ReShade release tag.
+
+After installation, start FiveM and open ReShade. In **Add-ons**, choose **SECRET EMKO Neural Graphics** and start with **Enhanced**. The default ReShade preset is `Secret_Emko_Main.ini`; `Secret_Emko_Stream.ini` is the lighter streaming preset.
 
 ## Quality profiles
 
@@ -68,3 +70,13 @@ Keep these files after each test:
 - any FiveM crash dump
 
 The Secret EMKO Diagnostics tab shows which files are present and loaded.
+
+
+## ReShade preset / shader policy
+
+- `Secret_Emko_Main.ini` is the main visual preset.
+- `Secret_Emko_Stream.ini` is the streaming-oriented preset with the supplied SMAA/sharpen chain.
+- ReShade search paths, cache and screenshots use relative paths so the package is not tied to one Windows username.
+- Public shader dependencies are resolved on install from ReShade's current official `EffectPackages.ini` index and downloaded from the upstream URLs defined there.
+- Proprietary packages such as QuantV/NVE are never fetched from third-party mirrors. If a preset references one and it is not already installed legitimately, the installer reports it instead of silently downloading an untrusted copy.
+- ReShade itself follows the current official Full Add-on Support installer at install time. The neural runtime stack remains pinned and hash-verified until a newer combination has been validated against the SECRET EMKO bridge/API contract.
