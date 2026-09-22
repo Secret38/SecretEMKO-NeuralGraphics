@@ -35,9 +35,10 @@ Copy-Item (Join-Path $RepoRoot "src\addon.cpp") (Join-Path $addonDir "addon.cpp"
 Copy-Item (Join-Path $RepoRoot "src\metadata.json") (Join-Path $addonDir "metadata.json") -Force
 
 Write-Host "Preparing RenoDX shader toolchain..."
+Write-Host "Using Windows SDK DXC to avoid transient GitHub API download throttling; RenoDX setup only manages Slang locally."
 Push-Location $src
 try {
-    & ".\scripts\setup-dev-env.ps1" -Update -Tools @("dxc", "slang")
+    & ".\scripts\setup-dev-env.ps1" -Update -Tools @("slang")
     if ($LASTEXITCODE -ne 0) { throw "RenoDX dev tool setup failed" }
 }
 finally { Pop-Location }
