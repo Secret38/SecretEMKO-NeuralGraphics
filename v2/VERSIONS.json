@@ -1,0 +1,44 @@
+{
+  "product": "SECRET EMKO Neural Graphics",
+  "version": "2.0.0-preview1",
+  "verified_on": "2026-09-22",
+  "components": {
+    "renodx_framework": {
+      "repository": "clshortfuse/renodx",
+      "commit": "9b212edad4dde9bca2b823b1e045b712b1a8d854",
+      "license": "MIT"
+    },
+    "reshade": {
+      "version": "6.8.0",
+      "distribution": "official Full Add-on Support installer; not redistributed"
+    },
+    "dlss5_bridge": {
+      "version": "1.4.12",
+      "asset": "dlss5-bridge.addon64",
+      "sha256": "4F2ACECC1026AE89AC0B92767BE66CEEA2662AD0EF88710B89C7DA7840D548D4",
+      "license": "MIT"
+    },
+    "renodx_dlss5_consumer": {
+      "version": "4.70",
+      "source": "RankFTW/rhi-repo release mirror used by DLSS5-Feeder",
+      "package_sha256": "D6E356D01B429AF6288F488A4926C44F1D779A7D4586EE8C79D04D3A09A536E6",
+      "redistribution": "downloaded at install time; not bundled"
+    },
+    "nvidia_dlss_sr": {
+      "version": "310.9.1",
+      "package_sha256": "AABA83B288BD145C3808E8D7A0BA03CC8C8676D18AD984B1BFA6563046A3BA37",
+      "redistribution": "downloaded at install time; not bundled"
+    },
+    "nvidia_dlss_nr": {
+      "version": "310.8.0",
+      "package_sha256": "388C0A7912E15EC911B9C9E11A692142B11FE387DDF2B637D8C358138FFFB3AC",
+      "rtx50_dll_sha256": "E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E",
+      "redistribution": "downloaded at install time; not bundled"
+    },
+    "nvidia_streamline": {
+      "version": "2.14.1",
+      "official_package_sha256": "92C4D954631A1710DA86CA3FA8D5034F2B9503838C95FC4AE977AE149319781B",
+      "redistribution": "downloaded from NVIDIA at install time; not bundled"
+    }
+  }
+}
