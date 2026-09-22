@@ -413,6 +413,38 @@ function Test-Rtx50([object[]]$Gpus) {
 
 function Restore-UpdateBackup([string]$BackupRoot, [string]$Target) {
     if (-not (Test-Path -LiteralPath $BackupRoot)) { return }
+
+    $candidates = @(
+        "dxgi.dll",
+        "ReShade.ini",
+        "dlss5-bridge.cfg",
+        "SecretEMKO.addon64",
+        "dlss5-bridge.addon64",
+        "renodx-dlss5.addon64",
+        "nvngx_dlssnr.dll",
+        "nvngx_dlss.dll",
+        "sl.interposer.dll",
+        "sl.common.dll",
+        "sl.dlss.dll",
+        "sl.dlss_g.dll",
+        "sl.dlss_nr.dll",
+        "sl.reflex.dll",
+        "sl.pcl.dll",
+        "sl.nis.dll",
+        "nvngx_dlssg.dll",
+        "swapchain_override.addon64",
+        "Secret_Emko_Main.ini",
+        "Secret_Emko_Stream.ini"
+    )
+
+    foreach ($name in $candidates) {
+        $current = Join-Path $Target $name
+        $saved = Join-Path $BackupRoot $name
+        if ((Test-Path -LiteralPath $current) -and -not (Test-Path -LiteralPath $saved)) {
+            Remove-Item -LiteralPath $current -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     Get-ChildItem -LiteralPath $BackupRoot -Force | ForEach-Object {
         Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $Target $_.Name) -Recurse -Force
     }
@@ -551,6 +583,13 @@ else {
     if ($priorState.original_plugins_backup) { $originalPluginsBackup = [string]$priorState.original_plugins_backup }
 }
 
+if (-not $managedExisting -and $ExistingPluginsMode -eq "Merge") {
+    $mergeReShadeMode = Get-ReShadeMode $PluginsPath
+    if ($mergeReShadeMode -eq "foreign") {
+        throw "Merge mode refused: the existing plugins folder contains a foreign dxgi.dll. Use the default Isolate mode."
+    }
+}
+
 $StateDir = Join-Path $PluginsPath "SecretEMKO"
 $Backup = Join-Path $StateDir "backups\$Stamp"
 $LicenseDir = Join-Path $StateDir "licenses"
@@ -559,13 +598,11 @@ Ensure-Folder $LicenseDir
 Ensure-Folder $Cache
 
 try {
-    Step "Checking/installing ReShade"
-    Install-ReShadeHeadless $PluginsPath $neuralMode
-
     Step "Backing up active managed configuration"
     $reshadeIni = Join-Path $PluginsPath "ReShade.ini"
     $bridgeCfg = Join-Path $PluginsPath "dlss5-bridge.cfg"
     foreach ($name in @(
+        "dxgi.dll",
         "ReShade.ini",
         "dlss5-bridge.cfg",
         "SecretEMKO.addon64",
@@ -573,6 +610,15 @@ try {
         "renodx-dlss5.addon64",
         "nvngx_dlssnr.dll",
         "nvngx_dlss.dll",
+        "sl.interposer.dll",
+        "sl.common.dll",
+        "sl.dlss.dll",
+        "sl.dlss_g.dll",
+        "sl.dlss_nr.dll",
+        "sl.reflex.dll",
+        "sl.pcl.dll",
+        "sl.nis.dll",
+        "nvngx_dlssg.dll",
         "swapchain_override.addon64",
         "Secret_Emko_Main.ini",
         "Secret_Emko_Stream.ini"
@@ -580,6 +626,37 @@ try {
         Backup-IfExists (Join-Path $PluginsPath $name) $Backup
     }
     Ok "Update backup root: $Backup"
+
+    Step "Checking/installing ReShade"
+    Install-ReShadeHeadless $PluginsPath $neuralMode
+
+    if (-not $neuralMode) {
+        Step "Removing Full Neural-only runtime files from active RP Visual environment"
+        foreach ($name in @(
+            "SecretEMKO.addon64",
+            "dlss5-bridge.addon64",
+            "renodx-dlss5.addon64",
+            "nvngx_dlssnr.dll",
+            "nvngx_dlss.dll",
+            "sl.interposer.dll",
+            "sl.common.dll",
+            "sl.dlss.dll",
+            "sl.dlss_g.dll",
+            "sl.dlss_nr.dll",
+            "sl.reflex.dll",
+            "sl.pcl.dll",
+            "sl.nis.dll",
+            "nvngx_dlssg.dll",
+            "swapchain_override.addon64",
+            "dlss5-bridge.cfg"
+        )) {
+            $p = Join-Path $PluginsPath $name
+            if (Test-Path -LiteralPath $p) {
+                Remove-Item -LiteralPath $p -Force
+                Write-Host ("   Removed: " + $name)
+            }
+        }
+    }
 
     Step "Installing SECRET EMKO package metadata"
     Copy-Item -LiteralPath (Join-Path $Root "THIRD_PARTY_NOTICES.md") -Destination (Join-Path $LicenseDir "THIRD_PARTY_NOTICES.md") -Force
@@ -799,6 +876,15 @@ catch {
         catch {
             Warn "Automatic rollback also failed. Original backup remains at: $originalPluginsBackup"
         }
+    }
+    elseif ($createdFreshPlugins -and -not $managedExisting) {
+        try {
+            if (Test-Path -LiteralPath $PluginsPath) {
+                $failedSnapshot = Join-Path $FiveMApp ("plugins.secret-emko-failed." + $Stamp)
+                Move-Item -LiteralPath $PluginsPath -Destination $failedSnapshot
+                Warn "Failed new SECRET EMKO environment preserved at: $failedSnapshot"
+            }
+        } catch {}
     }
     elseif ($managedExisting) {
         try {
