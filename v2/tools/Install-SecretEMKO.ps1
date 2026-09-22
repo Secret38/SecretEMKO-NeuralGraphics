@@ -195,7 +195,7 @@ Copy-Managed (Join-Path $Root "dlss5-bridge.addon64") "dlss5-bridge.addon64"
 Copy-Item -LiteralPath (Join-Path $Root "THIRD_PARTY_NOTICES.md") -Destination (Join-Path $LicenseDir "THIRD_PARTY_NOTICES.md") -Force
 Copy-Item -LiteralPath (Join-Path $Root "LICENSE") -Destination (Join-Path $LicenseDir "SECRET_EMKO_LICENSE.txt") -Force
 if (Test-Path (Join-Path $Root "licenses")) {
-    Copy-Item -LiteralPath (Join-Path $Root "licenses\*") -Destination $LicenseDir -Recurse -Force
+    Copy-Item (Join-Path $Root "licenses\*") -Destination $LicenseDir -Recurse -Force
 }
 
 Step "Downloading RenoDX DLSS 5 v4.70"
