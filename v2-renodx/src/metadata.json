@@ -1,0 +1,10 @@
+{
+  "$schema": "https://cdn.jsdelivr.net/gh/clshortfuse/renodx/renodx-metadata-schema.json",
+  "id": "secretemko",
+  "title": "SECRET EMKO Neural Graphics",
+  "maintainers": ["Secret38"],
+  "status": "experimental",
+  "deploy": {
+    "architecture": ["x64"]
+  }
+}
