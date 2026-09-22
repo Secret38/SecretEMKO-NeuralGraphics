@@ -28,6 +28,7 @@ $StreamPreset = Join-Path $PresetRoot "Secret_Emko_Stream.ini"
 $TemplateIni = Join-Path $ConfigRoot "ReShade.SecretEMKO.ini"
 $EffectCatalogUrl = "https://raw.githubusercontent.com/crosire/reshade-shaders/list/EffectPackages.ini"
 $AddonCatalogUrl = "https://raw.githubusercontent.com/crosire/reshade-shaders/list/Addons.ini"
+$script:SelectedDefaultPreset = "Secret_Emko_Stream.ini"
 
 function Step([string]$Text) { Write-Host "   [ReShade] $Text" -ForegroundColor Cyan }
 function Ok([string]$Text) { Write-Host "   [OK] $Text" -ForegroundColor Green }
@@ -250,8 +251,20 @@ function Install-PresetsAndConfig([string]$Target) {
         if (Test-Path -LiteralPath $legacyTextures) { Merge-IniListValue $ini "GENERAL" "TextureSearchPaths" ((Resolve-Path $legacyTextures).Path + "\**") }
     }
 
+    $quantVFound = $false
+    $quantVRoots = @((Join-Path $Target "reshade-shaders\Shaders"))
+    if ($LegacyContentRoot) { $quantVRoots += (Join-Path $LegacyContentRoot "reshade-shaders\Shaders") }
+    foreach ($root in $quantVRoots) {
+        if ((Test-Path -LiteralPath $root) -and (Get-ChildItem -LiteralPath $root -Recurse -File -Filter "QuantV.fx" -ErrorAction SilentlyContinue | Select-Object -First 1)) {
+            $quantVFound = $true
+            break
+        }
+    }
+    $script:SelectedDefaultPreset = if ($quantVFound) { "Secret_Emko_Main.ini" } else { "Secret_Emko_Stream.ini" }
+    if (-not $quantVFound) { Warn "QuantV was not found; Stream preset selected as the safe default. Main remains installed for later use." }
+
     Set-IniValue $ini "GENERAL" "IntermediateCachePath" ".\reshade-cache"
-    Set-IniValue $ini "GENERAL" "PresetPath" ".\Secret_Emko_Main.ini"
+    Set-IniValue $ini "GENERAL" "PresetPath" (".\" + $script:SelectedDefaultPreset)
     Set-IniValue $ini "GENERAL" "SkipLoadingDisabledEffects" "1"
     if ($CoreVariant -eq "Addon") { Merge-IniListValue $ini "ADDON" "AddonPath" "." }
     Set-IniValue $ini "SCREENSHOT" "SavePath" ".\Screenshots"
@@ -332,7 +345,7 @@ try {
         unresolved_effects = $unresolved
         missing_external_effects = $missingLocal
         legacy_content_root = $LegacyContentRoot
-        default_preset = "Secret_Emko_Main.ini"
+        default_preset = $script:SelectedDefaultPreset
         stream_preset = "Secret_Emko_Stream.ini"
         swapchain_override_source = $addonUrl
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stateDir "reshade-content-state.json") -Encoding UTF8
