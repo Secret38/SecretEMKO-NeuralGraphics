@@ -7,13 +7,13 @@ Public framework source: clshortfuse/renodx
 Copyright (c) 2025 Carlos Lopez Jr. and contributors  
 License: MIT.
 
-The build is compiled inside a pinned RenoDX source tree so it uses RenoDX's current ReShade integration/build infrastructure. RenoDX's original notices remain applicable.
+The build resolves RenoDX `origin/main` at build time and records the exact commit SHA in `BUILD-MANIFEST.json`. RenoDX's original notices remain applicable.
 
 ## ReShade
 ReShade and its add-on API are Copyright (C) Patrick Mours / crosire and contributors.  
 License: BSD 3-Clause for the source/API components used by the build.
 
-The ReShade binary is **not redistributed** by SECRET EMKO. If ReShade Full Add-on Support is missing, use the official ReShade installer.
+The ReShade binary is **not redistributed** by SECRET EMKO. The installer resolves the current official ReShade setup from reshade.me and installs the Standard or Full Add-on build required by the selected mode.
 
 ## DLSS 5 Bridge
 NIGos/dlss5-bridge  
