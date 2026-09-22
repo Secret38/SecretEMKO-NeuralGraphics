@@ -3,7 +3,7 @@ name: Build Secret EMKO v2 RenoDX
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ v2-renodx ]
     paths:
       - "v2/**"
       - ".github/workflows/build-v2-renodx.yml"
@@ -32,7 +32,7 @@ jobs:
       - name: Verify release files
         shell: powershell
         run: |
-          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-preview1"
+          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-preview2"
           $required = @(
             "SecretEMKO.addon64",
             "dlss5-bridge.addon64",
@@ -51,8 +51,8 @@ jobs:
       - name: Upload v2 package
         uses: actions/upload-artifact@v4
         with:
-          name: SecretEMKO-NeuralGraphics-v2.0.0-preview1
+          name: SecretEMKO-NeuralGraphics-v2.0.0-preview2
           path: |
-            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-preview1/**
-            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-preview1.zip
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-preview2/**
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-preview2.zip
           if-no-files-found: error
