@@ -1,11 +1,11 @@
 {
   "product": "SECRET EMKO Neural Graphics",
-  "version": "2.0.0-rc1",
+  "version": "2.0.0-rc2",
   "role": "main-system",
   "reshade": {
     "core": {
       "source": "https://reshade.me/",
-      "policy": "latest official Full Add-on Support at install time",
+      "policy": "latest official Standard or Full Add-on build selected by install mode",
       "minimum": "6.8.0"
     },
     "effects": {
@@ -28,5 +28,15 @@
   "runtimeCritical": {
     "policy": "pinned and SHA-256 verified until separately validated",
     "reason": "DLSS/NR/Bridge binary compatibility is more important than blindly following newest assets"
+  },
+  "installation": {
+    "path_policy": "auto-detect FiveM.app/plugins; explicit -PluginsPath override supported",
+    "isolation": "existing non-SECRET-EMKO plugins folder is renamed and preserved before creating a clean plugins folder",
+    "rollback": "first-install failures automatically restore the original plugins folder",
+    "modes": {
+      "Auto": "RTX 50-class -> FullNeural; other GPUs -> VisualOnly",
+      "FullNeural": "ReShade Full Add-on Support + SECRET EMKO/RenoDX/DLSS stack; requires explicit multiplayer-risk acknowledgement",
+      "VisualOnly": "standard ReShade + Secret Emko presets/shaders; no native neural/add-on injection"
+    }
   }
 }
