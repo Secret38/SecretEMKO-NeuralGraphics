@@ -308,7 +308,30 @@ function Disable-MissingPresetTechniques([string]$Path, [string[]]$MissingEffect
     $lines = @(Get-Content -LiteralPath $Path)
     $changed = $false
     for ($i = 0; $i -lt $lines.Count; $i++) {
-        if ($lines[$i] -notmatch '^(Techniques|TechniqueSorting)=(.*)
+        if ($lines[$i] -notmatch '^(Techniques|TechniqueSorting)=(.*)$') { continue }
+
+        $key = $Matches[1]
+        $entries = @($Matches[2] -split "," | Where-Object { $_ })
+        $kept = New-Object System.Collections.Generic.List[string]
+
+        foreach ($entry in $entries) {
+            $drop = $false
+            if ($entry -match '@(.+\.fx)$') {
+                $drop = $missing.Contains($Matches[1])
+            }
+            if (-not $drop) { [void]$kept.Add($entry) }
+            else { $changed = $true }
+        }
+
+        $lines[$i] = $key + "=" + ($kept -join ",")
+    }
+
+    if ($changed) {
+        Set-Content -LiteralPath $Path -Value $lines -Encoding UTF8
+        Warn ("Disabled unavailable external techniques in " + (Split-Path -Leaf $Path))
+    }
+}
+
 function Install-SwapchainOverride([string]$Target, [string]$Arch) {
     $catalogText = (Invoke-WebRequest -UseBasicParsing -Uri $AddonCatalogUrl -Headers @{ "User-Agent" = "SecretEMKO-v2" }).Content
     $addons = Parse-Catalog $catalogText
