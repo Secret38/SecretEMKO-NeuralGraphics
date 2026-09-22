@@ -134,6 +134,10 @@ bool ModuleLoaded(const wchar_t* name) {
   return GetModuleHandleW(name) != nullptr;
 }
 
+bool NeuralStackPresent() {
+  return FileExists(L"renodx-dlss5.addon64") && FileExists(L"nvngx_dlssnr.dll");
+}
+
 std::filesystem::path BridgeConfigPath() {
   return g_dir / L"dlss5-bridge.cfg";
 }
@@ -347,7 +351,7 @@ void DrawHeader() {
   ImGui::TextUnformatted("SECRET EMKO");
   ImGui::SameLine();
   ImGui::TextDisabled("NEURAL GRAPHICS");
-  const bool neural_stack = FileExists(L"renodx-dlss5.addon64") && FileExists(L"nvngx_dlssnr.dll");
+  const bool neural_stack = NeuralStackPresent();
   ImGui::TextDisabled(neural_stack
       ? "FiveM GTA V Legacy  |  Full Neural mode  |  v2.0 RC2"
       : "FiveM GTA V Legacy  |  Visual compatibility mode  |  v2.0 RC2");
@@ -364,14 +368,20 @@ void DrawHeader() {
 }
 
 void DrawOverview() {
-  if (ImGui::Button("Apply Enhanced (Recommended)", ImVec2(230, 34))) {
-    ApplyProfile(3);
+  const bool neural_stack = NeuralStackPresent();
+  if (neural_stack) {
+    if (ImGui::Button("Apply Enhanced (Recommended)", ImVec2(230, 34))) {
+      ApplyProfile(3);
+    }
+    ImGui::SameLine();
   }
-  ImGui::SameLine();
   if (ImGui::Button("Reload settings", ImVec2(150, 34))) {
     LoadNeuralSettings();
     LoadBridgeConfig();
     g_restart_required = false;
+  }
+  if (!neural_stack) {
+    ImGui::TextWrapped("Visual compatibility mode is active. ReShade presets remain available, but the RTX 50 DLSS 5 Neural stack is not installed.");
   }
 
   ImGui::Spacing();
@@ -383,10 +393,10 @@ void DrawOverview() {
     ImGui::TableHeadersRow();
     StatusRow("ReShade Full Add-on", L"dxgi.dll", true, "Loader and native overlay host.");
     StatusRow("SECRET EMKO UI", L"SecretEMKO.addon64", true, "Profiles, diagnostics and policy.");
-    StatusRow("DLSS 5 Bridge", L"dlss5-bridge.addon64", true, "Synthesizes the DLSS contract for GTA V Legacy D3D11.");
-    StatusRow("RenoDX DLSS 5", L"renodx-dlss5.addon64", true, "Neural Rendering consumer.");
-    StatusRow("DLSS SR runtime", L"nvngx_dlss.dll", true, "NGX DLSS runtime used by the synthetic contract.");
-    StatusRow("DLSS NR runtime", L"nvngx_dlssnr.dll", true, "NVIDIA Neural Rendering model runtime.");
+    StatusRow("DLSS 5 Bridge", L"dlss5-bridge.addon64", neural_stack, neural_stack ? "Synthesizes the DLSS contract for GTA V Legacy D3D11." : "Not required in visual compatibility mode.");
+    StatusRow("RenoDX DLSS 5", L"renodx-dlss5.addon64", neural_stack, neural_stack ? "Neural Rendering consumer." : "Not installed in visual compatibility mode.");
+    StatusRow("DLSS SR runtime", L"nvngx_dlss.dll", neural_stack, neural_stack ? "NGX DLSS runtime used by the synthetic contract." : "Not required in visual compatibility mode.");
+    StatusRow("DLSS NR runtime", L"nvngx_dlssnr.dll", neural_stack, neural_stack ? "NVIDIA Neural Rendering model runtime." : "RTX 50 Neural runtime is intentionally absent.");
     StatusRow("DLSS Frame Generation", L"nvngx_dlssg.dll", false, "Runtime file only; FiveM FG integration is not armed by v2 yet.");
     ImGui::EndTable();
   }
@@ -401,6 +411,12 @@ void DrawOverview() {
 }
 
 void DrawProfiles() {
+  if (!NeuralStackPresent()) {
+    ImGui::SeparatorText("Neural style profiles");
+    ImGui::TextWrapped("Unavailable in visual compatibility mode. Use the ReShade Home tab to switch between Secret_Emko_Main.ini and Secret_Emko_Stream.ini.");
+    return;
+  }
+
   ImGui::SeparatorText("Style profile");
   const char* names[] = {"Natural", "Clean", "Detail", "Enhanced", "Cinematic", "Ultra Detail"};
   ImGui::SetNextItemWidth(260.0f);
@@ -461,11 +477,10 @@ bool Slider(const char* label, float* value, float lo, float hi, const char* hel
 
 void DrawNeural() {
   bool changed = false;
-  const bool neural_stack = FileExists(L"renodx-dlss5.addon64") && FileExists(L"nvngx_dlssnr.dll");
+  const bool neural_stack = NeuralStackPresent();
   if (!neural_stack) {
-    ImGui::TextWrapped("Neural Rendering is unavailable in this installation. SECRET EMKO is running in visual-compatibility mode. Official DLSS 5 3D-Guided Neural Rendering requires GeForce RTX 50-series hardware.");
-    ImGui::Spacing();
-    ImGui::BeginDisabled(true);
+    ImGui::TextWrapped("Neural Rendering is unavailable in this installation. SECRET EMKO is running in visual compatibility mode. Official DLSS 5 3D-Guided Neural Rendering requires GeForce RTX 50-series hardware.");
+    return;
   }
 
   bool enabled = g_nr.enabled != 0;
@@ -512,10 +527,13 @@ void DrawNeural() {
   ImGui::TextDisabled("Latest-core policy: one correct temporal pass is preferred over stacking an older incompatible consumer.");
 
   if (changed) WriteNeuralSettings();
-  if (!neural_stack) ImGui::EndDisabled();
 }
 
 void DrawQuality() {
+  if (!NeuralStackPresent()) {
+    ImGui::TextWrapped("Neural quality controls are unavailable in visual compatibility mode. ReShade post-processing remains active.");
+    return;
+  }
   bool changed = false;
   ImGui::SeparatorText("Colour bridge");
   changed |= Slider("Transfer Strength", &g_nr.transfer_strength, 0.0f, 1.0f, "Legacy colour-transfer strength retained by v4.7. 1.0 preserves the full bridge response.");
@@ -550,6 +568,11 @@ void DrawQuality() {
 }
 
 void DrawBridge() {
+  if (!NeuralStackPresent()) {
+    ImGui::TextWrapped("DLSS 5 Bridge is not installed in visual compatibility mode.");
+    return;
+  }
+
   bool changed = false;
   bool synth = g_bridge.synth != 0;
   if (ImGui::Checkbox("Replace / synthesize DLSS contract", &synth)) {
