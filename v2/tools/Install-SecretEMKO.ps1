@@ -296,9 +296,6 @@ if (-not (Test-Path -LiteralPath $reshadeContentTool)) {
     throw "Missing integrated ReShade updater: $reshadeContentTool"
 }
 & $reshadeContentTool -TargetDirectory $PluginsPath -Architecture 64
-if ($LASTEXITCODE -ne 0) {
-    throw "Integrated ReShade updater failed with exit code $LASTEXITCODE"
-}
 Ok "ReShade Main/Stream content updated"
 
 Step "Writing install state"
