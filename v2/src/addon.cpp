@@ -28,7 +28,7 @@
 namespace {
 
 constexpr const char* kProduct = "SECRET EMKO Neural Graphics";
-constexpr const char* kVersion = "2.0.0-preview1";
+constexpr const char* kVersion = "2.0.0-rc2";
 constexpr const char* kProviderSection = "RenoDX.DLSS5";
 constexpr const char* kOwnSection = "SecretEMKO";
 
@@ -314,6 +314,20 @@ void StatusRow(const char* label, const wchar_t* file, bool required, const char
 }
 
 int CountReady() {
+  const bool neural_stack = FileExists(L"renodx-dlss5.addon64") || FileExists(L"nvngx_dlssnr.dll");
+  if (!neural_stack) {
+    const wchar_t* files[] = {
+        L"dxgi.dll",
+        L"SecretEMKO.addon64",
+        L"swapchain_override.addon64",
+        L"Secret_Emko_Main.ini",
+        L"Secret_Emko_Stream.ini",
+    };
+    int ready = 0;
+    for (auto* f : files) if (FileExists(f)) ++ready;
+    return ready * 6 / 5;
+  }
+
   const wchar_t* files[] = {
       L"dxgi.dll",
       L"SecretEMKO.addon64",
@@ -333,7 +347,10 @@ void DrawHeader() {
   ImGui::TextUnformatted("SECRET EMKO");
   ImGui::SameLine();
   ImGui::TextDisabled("NEURAL GRAPHICS");
-  ImGui::TextDisabled("FiveM GTA V Legacy  |  RenoDX + ReShade architecture  |  v2.0 preview");
+  const bool neural_stack = FileExists(L"renodx-dlss5.addon64") && FileExists(L"nvngx_dlssnr.dll");
+  ImGui::TextDisabled(neural_stack
+      ? "FiveM GTA V Legacy  |  Full Neural mode  |  v2.0 RC2"
+      : "FiveM GTA V Legacy  |  Visual compatibility mode  |  v2.0 RC2");
   const float readiness = static_cast<float>(CountReady()) / 6.0f;
   char overlay[64];
   sprintf_s(overlay, "Core stack %.0f%% ready", readiness * 100.0f);
@@ -444,6 +461,12 @@ bool Slider(const char* label, float* value, float lo, float hi, const char* hel
 
 void DrawNeural() {
   bool changed = false;
+  const bool neural_stack = FileExists(L"renodx-dlss5.addon64") && FileExists(L"nvngx_dlssnr.dll");
+  if (!neural_stack) {
+    ImGui::TextWrapped("Neural Rendering is unavailable in this installation. SECRET EMKO is running in visual-compatibility mode. Official DLSS 5 3D-Guided Neural Rendering requires GeForce RTX 50-series hardware.");
+    ImGui::Spacing();
+    ImGui::BeginDisabled(true);
+  }
 
   bool enabled = g_nr.enabled != 0;
   if (ImGui::Checkbox("Enable DLSS Neural Rendering", &enabled)) {
@@ -489,6 +512,7 @@ void DrawNeural() {
   ImGui::TextDisabled("Latest-core policy: one correct temporal pass is preferred over stacking an older incompatible consumer.");
 
   if (changed) WriteNeuralSettings();
+  if (!neural_stack) ImGui::EndDisabled();
 }
 
 void DrawQuality() {

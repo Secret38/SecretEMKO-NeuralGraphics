@@ -1,8 +1,13 @@
 [CmdletBinding()]
 param(
-    [string]$PluginsPath = "$env:LOCALAPPDATA\FiveM\FiveM.app\plugins",
+    [string]$PluginsPath = "",
+    [string]$FiveMPath = "",
+    [ValidateSet("Isolate","Merge")]
+    [string]$ExistingPluginsMode = "Isolate",
     [switch]$SkipStreamline,
-    [switch]$Force
+    [switch]$Force,
+    [switch]$ForceNeuralStack,
+    [switch]$NonInteractive
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,11 +17,11 @@ $ProgressPreference = "SilentlyContinue"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ((Split-Path -Leaf $Root) -ieq "tools") { $Root = Split-Path -Parent $Root }
 
+$Product = "SECRET EMKO Neural Graphics"
+$Version = "2.0.0-rc2"
 $Cache = Join-Path $env:LOCALAPPDATA "SecretEMKO\cache"
+$GlobalStateRoot = Join-Path $env:LOCALAPPDATA "SecretEMKO\state"
 $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$StateDir = Join-Path $PluginsPath "SecretEMKO"
-$Backup = Join-Path $StateDir "backups\$Stamp"
-$LicenseDir = Join-Path $StateDir "licenses"
 
 $Urls = @{
     RenoDX = "https://github.com/RankFTW/rhi-repo/releases/download/renodx-dlss5-4.70/renodx-dlss5_4.70.zip"
@@ -34,10 +39,10 @@ $Rtx50NrDllHash = "E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1F
 
 function Banner {
     Write-Host ""
-    Write-Host "===============================================================" -ForegroundColor DarkGray
-    Write-Host " SECRET EMKO  //  NEURAL GRAPHICS v2" -ForegroundColor Cyan
-    Write-Host " FiveM GTA V Legacy  |  RenoDX + ReShade architecture" -ForegroundColor Gray
-    Write-Host "===============================================================" -ForegroundColor DarkGray
+    Write-Host "================================================================" -ForegroundColor DarkGray
+    Write-Host " SECRET EMKO  //  NEURAL GRAPHICS v2 RC2" -ForegroundColor Cyan
+    Write-Host " Universal FiveM Legacy installer  |  isolated + reversible" -ForegroundColor Gray
+    Write-Host "================================================================" -ForegroundColor DarkGray
     Write-Host ""
 }
 
@@ -60,6 +65,141 @@ function Ensure-Folder([string]$Path) {
     }
 }
 
+function Get-PathId([string]$Path) {
+    $normalized = [IO.Path]::GetFullPath($Path).TrimEnd('\').ToLowerInvariant()
+    $bytes = [Text.Encoding]::UTF8.GetBytes($normalized)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hash = $sha.ComputeHash($bytes) } finally { $sha.Dispose() }
+    return ([BitConverter]::ToString($hash).Replace("-", "").Substring(0, 12))
+}
+
+function Test-FiveMAppPath([string]$Path) {
+    if (-not $Path) { return $false }
+    try { $full = [IO.Path]::GetFullPath($Path) } catch { return $false }
+    return (Test-Path -LiteralPath (Join-Path $full "CitizenFX.ini"))
+}
+
+function Normalize-FiveMAppPath([string]$Path) {
+    if (-not $Path) { return $null }
+
+    $candidate = $Path.Trim('"')
+    if (-not (Test-Path -LiteralPath $candidate)) { return $null }
+
+    $item = Get-Item -LiteralPath $candidate
+    if (-not $item.PSIsContainer) {
+        if ($item.Name -ieq "CitizenFX.ini") {
+            $candidate = $item.DirectoryName
+        }
+        elseif ($item.Name -ieq "FiveM.exe") {
+            $base = $item.DirectoryName
+            if (Test-FiveMAppPath (Join-Path $base "FiveM.app")) { return (Join-Path $base "FiveM.app") }
+            $candidate = $base
+        }
+        else {
+            $candidate = $item.DirectoryName
+        }
+    }
+
+    $candidate = [IO.Path]::GetFullPath($candidate)
+    if (Test-FiveMAppPath $candidate) { return $candidate }
+
+    $nested = Join-Path $candidate "FiveM.app"
+    if (Test-FiveMAppPath $nested) { return [IO.Path]::GetFullPath($nested) }
+
+    if ((Split-Path -Leaf $candidate) -ieq "plugins") {
+        $parent = Split-Path -Parent $candidate
+        if (Test-FiveMAppPath $parent) { return [IO.Path]::GetFullPath($parent) }
+    }
+
+    return $null
+}
+
+function Get-ShortcutFiveMCandidates {
+    $roots = @(
+        (Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"),
+        (Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs"),
+        ([Environment]::GetFolderPath("Desktop"))
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+
+    $shell = New-Object -ComObject WScript.Shell
+    foreach ($root in $roots) {
+        Get-ChildItem -LiteralPath $root -Filter "*FiveM*.lnk" -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                $shortcut = $shell.CreateShortcut($_.FullName)
+                if ($shortcut.TargetPath) {
+                    $resolved = Normalize-FiveMAppPath $shortcut.TargetPath
+                    if ($resolved) { $resolved }
+                }
+            } catch {}
+        }
+    }
+}
+
+function Select-FiveMInteractively {
+    if ($NonInteractive) { return $null }
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        $dialog = New-Object System.Windows.Forms.OpenFileDialog
+        $dialog.Title = "Select FiveM.exe (Legacy)"
+        $dialog.Filter = "FiveM executable (FiveM.exe)|FiveM.exe|All files (*.*)|*.*"
+        $dialog.CheckFileExists = $true
+        if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+            return (Normalize-FiveMAppPath $dialog.FileName)
+        }
+    } catch {
+        Warn "Interactive FiveM picker could not be opened: $($_.Exception.Message)"
+    }
+    return $null
+}
+
+function Resolve-FiveMAppPath {
+    if ($PluginsPath) {
+        $fromPlugins = Normalize-FiveMAppPath $PluginsPath
+        if ($fromPlugins) { return $fromPlugins }
+        throw "-PluginsPath does not point to a valid FiveM Legacy application-data plugins path: $PluginsPath"
+    }
+
+    if ($FiveMPath) {
+        $explicit = Normalize-FiveMAppPath $FiveMPath
+        if ($explicit) { return $explicit }
+        throw "-FiveMPath does not resolve to a FiveM Legacy installation: $FiveMPath"
+    }
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+    $default = Join-Path $env:LOCALAPPDATA "FiveM\FiveM.app"
+    if (Test-FiveMAppPath $default) { [void]$candidates.Add([IO.Path]::GetFullPath($default)) }
+
+    foreach ($p in @(Get-ShortcutFiveMCandidates)) {
+        if ($p -and -not $candidates.Contains($p)) { [void]$candidates.Add($p) }
+    }
+
+    if ($candidates.Count -eq 1) { return $candidates[0] }
+    if ($candidates.Count -gt 1) {
+        $defaultFull = [IO.Path]::GetFullPath($default)
+        if ($candidates.Contains($defaultFull)) {
+            Warn "Multiple FiveM Legacy installs were discovered; selecting the standard LocalAppData install."
+            return $defaultFull
+        }
+
+        $ordered = $candidates | Sort-Object {
+            $citizen = Join-Path $_ "CitizenFX.ini"
+            if (Test-Path -LiteralPath $citizen) { (Get-Item -LiteralPath $citizen).LastWriteTimeUtc } else { [datetime]::MinValue }
+        } -Descending
+        Warn "Multiple custom FiveM Legacy installs were discovered; selecting the most recently used candidate."
+        return $ordered[0]
+    }
+
+    $picked = Select-FiveMInteractively
+    if ($picked) { return $picked }
+
+    $enhancedConfig = Join-Path $env:APPDATA "FiveM for GTAV Enhanced\config.toml"
+    if (Test-Path -LiteralPath $enhancedConfig) {
+        throw "Only FiveM for GTAV Enhanced was detected. SECRET EMKO v2 RC2 currently targets FiveM GTA V Legacy and will not install into Enhanced."
+    }
+
+    throw "FiveM Legacy was not found. Start FiveM Legacy once, or run the installer with -FiveMPath <path-to-FiveM.exe>."
+}
+
 function Download-Verified([string]$Url, [string]$Path, [string]$ExpectedHash) {
     Ensure-Folder (Split-Path -Parent $Path)
     $need = $true
@@ -70,7 +210,7 @@ function Download-Verified([string]$Url, [string]$Path, [string]$ExpectedHash) {
     }
     if ($need) {
         Write-Host "   Downloading $(Split-Path -Leaf $Path)..."
-        Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Path
+        Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Path -Headers @{ "User-Agent" = "SecretEMKO-v2" }
     }
     $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
     if ($actual -ine $ExpectedHash) {
@@ -97,16 +237,80 @@ function Find-RequiredFile([string]$RootPath, [string]$Name, [string]$Hash = "")
     return $all[0].FullName
 }
 
-function Backup-IfExists([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path)) { return }
-    Ensure-Folder $Backup
-    $dest = Join-Path $Backup (Split-Path -Leaf $Path)
-    Copy-Item -LiteralPath $Path -Destination $dest -Force
+function Test-ReShadeFullAddon([string]$Directory) {
+    $dll = Join-Path $Directory "dxgi.dll"
+    if (-not (Test-Path -LiteralPath $dll)) { return $false }
+    try {
+        $bytes = [IO.File]::ReadAllBytes($dll)
+        $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+        return $ascii.Contains("ReShadeRegisterAddon")
+    } catch { return $false }
 }
 
-function Copy-Managed([string]$Source, [string]$Name) {
-    $dest = Join-Path $PluginsPath $Name
-    Backup-IfExists $dest
+function Get-LatestReShadeSetup {
+    $home = Invoke-WebRequest -UseBasicParsing -Uri "https://reshade.me/" -Headers @{ "User-Agent" = "SecretEMKO-v2" }
+    if ($home.Content -notmatch 'Version\s+([0-9]+\.[0-9]+\.[0-9]+)') {
+        throw "Could not resolve the current ReShade version from reshade.me."
+    }
+    $version = $Matches[1]
+    return [pscustomobject]@{
+        Version = $version
+        Url = ("https://reshade.me/downloads/ReShade_Setup_" + $version + "_Addon.exe")
+    }
+}
+
+function Install-ReShadeFullAddonHeadless([string]$Directory) {
+    if (Test-ReShadeFullAddon $Directory) {
+        Ok "ReShade Full Add-on Support detected"
+        return
+    }
+
+    $existingDxgi = Join-Path $Directory "dxgi.dll"
+    if (Test-Path -LiteralPath $existingDxgi) {
+        throw "A non-ReShade dxgi.dll already exists in the active plugins folder. Re-run with the default Isolate mode or remove the conflicting proxy."
+    }
+
+    $setupInfo = Get-LatestReShadeSetup
+    Ensure-Folder $Cache
+    $setup = Join-Path $Cache ("ReShade_Setup_" + $setupInfo.Version + "_Addon.exe")
+    if (-not (Test-Path -LiteralPath $setup)) {
+        Step ("Downloading official ReShade " + $setupInfo.Version + " Full Add-on Support")
+        Invoke-WebRequest -UseBasicParsing -Uri $setupInfo.Url -OutFile $setup -Headers @{ "User-Agent" = "SecretEMKO-v2" }
+    }
+
+    $hostSource = Join-Path $env:WINDIR "System32\notepad.exe"
+    if (-not (Test-Path -LiteralPath $hostSource)) { throw "Could not locate a 64-bit Windows host executable for ReShade setup." }
+    $host = Join-Path $Directory "_SecretEMKO_ReShadeHost.exe"
+    Copy-Item -LiteralPath $hostSource -Destination $host -Force
+
+    try {
+        Step "Installing ReShade Full Add-on Support automatically"
+        $args = @("--headless", "--api", "dxgi", $host)
+        $proc = Start-Process -FilePath $setup -ArgumentList $args -Wait -PassThru
+        if ($proc.ExitCode -ne 0) {
+            throw "ReShade setup returned exit code $($proc.ExitCode)."
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $host -Force -ErrorAction SilentlyContinue
+    }
+
+    if (-not (Test-ReShadeFullAddon $Directory)) {
+        throw "ReShade Full Add-on Support was not installed into the FiveM plugins folder."
+    }
+    Ok "ReShade Full Add-on Support installed"
+}
+
+function Backup-IfExists([string]$Path, [string]$BackupRoot) {
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    Ensure-Folder $BackupRoot
+    $dest = Join-Path $BackupRoot (Split-Path -Leaf $Path)
+    Copy-Item -LiteralPath $Path -Destination $dest -Recurse -Force
+}
+
+function Copy-Managed([string]$Source, [string]$Name, [string]$Target, [string]$BackupRoot) {
+    $dest = Join-Path $Target $Name
+    Backup-IfExists $dest $BackupRoot
     Copy-Item -LiteralPath $Source -Destination $dest -Force
     Ok "$Name"
 }
@@ -137,7 +341,7 @@ function Set-IniValue([string]$Path,[string]$Section,[string]$Key,[string]$Value
     }
 
     for ($i=$start+1; $i -lt $end; $i++) {
-        if ($lines[$i] -match "^\s*$([regex]::Escape($Key))\s*=") {
+        if ($lines[$i] -match ("^\s*" + [regex]::Escape($Key) + "\s*=")) {
             $lines[$i]="$Key=$Value"
             Set-Content -LiteralPath $Path -Value $lines -Encoding UTF8
             return
@@ -148,221 +352,390 @@ function Set-IniValue([string]$Path,[string]$Section,[string]$Key,[string]$Value
     Set-Content -LiteralPath $Path -Value $lines -Encoding UTF8
 }
 
-function Copy-OptionalStreamlineFile([string]$Extracted, [string]$Name) {
+function Copy-OptionalStreamlineFile([string]$Extracted, [string]$Name, [string]$Target, [string]$BackupRoot) {
     $candidates = @(Get-ChildItem -LiteralPath $Extracted -Recurse -File -Filter $Name -ErrorAction SilentlyContinue |
         Where-Object { $_.FullName -match '[\\/]bin[\\/]x64[\\/]' -and $_.FullName -notmatch '[\\/]development[\\/]' })
     if ($candidates.Count -eq 0) {
         Warn "$Name was not present in the production x64 set"
-        return
+        return $false
     }
-    Copy-Managed $candidates[0].FullName $Name
+    Copy-Managed $candidates[0].FullName $Name $Target $BackupRoot
+    return $true
+}
+
+function Get-GpuSummary {
+    $rows = @()
+    try {
+        $rows = @(Get-CimInstance Win32_VideoController -ErrorAction Stop | ForEach-Object {
+            [pscustomobject]@{
+                Name = [string]$_.Name
+                DriverVersion = [string]$_.DriverVersion
+            }
+        })
+    } catch {}
+    return $rows
+}
+
+function Test-Rtx50([object[]]$Gpus) {
+    foreach ($gpu in $Gpus) {
+        if ($gpu.Name -match '(?i)NVIDIA.*RTX\s*50[0-9]{2}') { return $true }
+    }
+    return $false
+}
+
+function Restore-UpdateBackup([string]$BackupRoot, [string]$Target) {
+    if (-not (Test-Path -LiteralPath $BackupRoot)) { return }
+    Get-ChildItem -LiteralPath $BackupRoot -Force | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $Target $_.Name) -Recurse -Force
+    }
 }
 
 Banner
+
+if (-not [Environment]::Is64BitOperatingSystem) {
+    throw "SECRET EMKO v2 requires 64-bit Windows."
+}
 
 if (Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -like "FiveM*" -or $_.ProcessName -like "GTAProcess*" }) {
     throw "Close FiveM before installing SECRET EMKO."
 }
 
-Ensure-Folder $PluginsPath
-Ensure-Folder $Cache
-Ensure-Folder $StateDir
-Ensure-Folder $LicenseDir
+$FiveMApp = Resolve-FiveMAppPath
+if (-not $PluginsPath) { $PluginsPath = Join-Path $FiveMApp "plugins" }
+$PluginsPath = [IO.Path]::GetFullPath($PluginsPath)
 
-Step "Checking ReShade"
-$reshade = Join-Path $PluginsPath "dxgi.dll"
-$reshadeValid = $false
-if (Test-Path -LiteralPath $reshade) {
-    $reshadeBytes = [IO.File]::ReadAllBytes($reshade)
-    $reshadeAscii = [Text.Encoding]::ASCII.GetString($reshadeBytes)
-    $reshadeValid = $reshadeAscii.Contains("ReShadeRegisterAddon")
+Step "Resolved FiveM Legacy installation"
+Write-Host "   FiveM.app : $FiveMApp"
+Write-Host "   plugins   : $PluginsPath"
+
+$pathId = Get-PathId $PluginsPath
+Ensure-Folder $GlobalStateRoot
+$GlobalStateFile = Join-Path $GlobalStateRoot ("install-state-" + $pathId + ".json")
+
+$priorState = $null
+$localMarker = Join-Path $PluginsPath "SecretEMKO\install-state.json"
+if (Test-Path -LiteralPath $localMarker) {
+    try { $priorState = Get-Content -LiteralPath $localMarker -Raw | ConvertFrom-Json } catch {}
 }
-if (-not $reshadeValid) {
-    $home = Invoke-WebRequest -UseBasicParsing -Uri "https://reshade.me/"
-    if ($home.Content -notmatch 'Version\s+([0-9]+\.[0-9]+\.[0-9]+)') {
-        throw "Could not resolve current ReShade version from reshade.me."
-    }
-    $reshadeVersion = $Matches[1]
-    $setup = Join-Path $Cache ("ReShade_Setup_" + $reshadeVersion + "_Addon.exe")
-    $reshadeUrl = "https://reshade.me/downloads/ReShade_Setup_$($reshadeVersion)_Addon.exe"
-    Warn "SECRET EMKO requires ReShade Full Add-on Support. The current official installer will be opened."
-    Invoke-WebRequest -UseBasicParsing -Uri $reshadeUrl -OutFile $setup
-    Start-Process -FilePath $setup
-    exit 2
-}
-Ok "Existing ReShade Full Add-on Support dxgi.dll preserved"
-
-Step "Backing up managed configuration"
-$reshadeIni = Join-Path $PluginsPath "ReShade.ini"
-$bridgeCfg = Join-Path $PluginsPath "dlss5-bridge.cfg"
-Backup-IfExists $reshadeIni
-Backup-IfExists $bridgeCfg
-Ok "Backup root: $Backup"
-
-Step "Installing SECRET EMKO and DLSS 5 Bridge"
-Copy-Managed (Join-Path $Root "SecretEMKO.addon64") "SecretEMKO.addon64"
-Copy-Managed (Join-Path $Root "dlss5-bridge.addon64") "dlss5-bridge.addon64"
-Copy-Item -LiteralPath (Join-Path $Root "THIRD_PARTY_NOTICES.md") -Destination (Join-Path $LicenseDir "THIRD_PARTY_NOTICES.md") -Force
-Copy-Item -LiteralPath (Join-Path $Root "LICENSE") -Destination (Join-Path $LicenseDir "SECRET_EMKO_LICENSE.txt") -Force
-if (Test-Path (Join-Path $Root "licenses")) {
-    Copy-Item (Join-Path $Root "licenses\*") -Destination $LicenseDir -Recurse -Force
+if (-not $priorState -and (Test-Path -LiteralPath $GlobalStateFile)) {
+    try { $priorState = Get-Content -LiteralPath $GlobalStateFile -Raw | ConvertFrom-Json } catch {}
 }
 
-Step "Downloading RenoDX DLSS 5 v4.70"
-$renodxZip = Join-Path $Cache "renodx-dlss5_4.70.zip"
-Download-Verified $Urls.RenoDX $renodxZip $Hashes.RenoDX
-$renodxExtract = Join-Path $Cache "renodx-dlss5_4.70"
-Expand-Fresh $renodxZip $renodxExtract
-$consumer = Find-RequiredFile $renodxExtract "renodx-dlss5*.addon64"
-Copy-Managed $consumer "renodx-dlss5.addon64"
+$managedExisting = $false
+if ($priorState -and $priorState.product -eq $Product -and $priorState.plugins_path -eq $PluginsPath -and (Test-Path -LiteralPath $PluginsPath)) {
+    $managedExisting = $true
+}
 
-Step "Downloading NVIDIA DLSS Neural Rendering 310.8.0"
-$nrZip = Join-Path $Cache "nvngx_dlssnr_310.8.0.zip"
-Download-Verified $Urls.DlssNr $nrZip $Hashes.DlssNr
-$nrExtract = Join-Path $Cache "nvngx_dlssnr_310.8.0"
-Expand-Fresh $nrZip $nrExtract
-$nrDll = Find-RequiredFile $nrExtract "nvngx_dlssnr.dll" $Rtx50NrDllHash
-Copy-Managed $nrDll "nvngx_dlssnr.dll"
+$originalPluginsBackup = $null
+$createdFreshPlugins = $false
+$rollbackOriginal = $false
 
-Step "Downloading NVIDIA DLSS Super Resolution 310.9.1"
-$srZip = Join-Path $Cache "nvngx_dlss_310.9.1.zip"
-Download-Verified $Urls.DlssSr $srZip $Hashes.DlssSr
-$srExtract = Join-Path $Cache "nvngx_dlss_310.9.1"
-Expand-Fresh $srZip $srExtract
-$srDll = Find-RequiredFile $srExtract "nvngx_dlss.dll"
-Copy-Managed $srDll "nvngx_dlss.dll"
-
-if (-not $SkipStreamline) {
-    Step "Downloading NVIDIA Streamline 2.14.1"
-    $slZip = Join-Path $Cache "streamline-sdk-v2.14.1.zip"
-    Download-Verified $Urls.Streamline $slZip $Hashes.Streamline
-    $slExtract = Join-Path $Cache "streamline-sdk-v2.14.1"
-    Expand-Fresh $slZip $slExtract
-
-    foreach ($name in @(
-        "sl.interposer.dll",
-        "sl.common.dll",
-        "sl.dlss.dll",
-        "sl.dlss_g.dll",
-        "sl.dlss_nr.dll",
-        "sl.reflex.dll",
-        "sl.pcl.dll",
-        "sl.nis.dll",
-        "nvngx_dlssg.dll"
-    )) {
-        Copy-OptionalStreamlineFile $slExtract $name
+if (-not $managedExisting) {
+    $hasExistingContent = $false
+    if (Test-Path -LiteralPath $PluginsPath) {
+        $hasExistingContent = $null -ne (Get-ChildItem -LiteralPath $PluginsPath -Force -ErrorAction SilentlyContinue | Select-Object -First 1)
     }
 
-    foreach ($notice in @("license.txt","3rd-party-licenses.md")) {
-        $found = @(Get-ChildItem -LiteralPath $slExtract -Recurse -File -Filter $notice -ErrorAction SilentlyContinue | Select-Object -First 1)
-        if ($found.Count -gt 0) {
-            Copy-Item -LiteralPath $found[0].FullName -Destination (Join-Path $LicenseDir ("NVIDIA-Streamline-" + $notice)) -Force
+    if ($hasExistingContent -and $ExistingPluginsMode -eq "Isolate") {
+        $originalPluginsBackup = Join-Path $FiveMApp ("plugins.before-secret-emko." + $Stamp)
+        Step "Isolating existing FiveM plugins"
+        Move-Item -LiteralPath $PluginsPath -Destination $originalPluginsBackup
+        Ensure-Folder $PluginsPath
+        $createdFreshPlugins = $true
+        $rollbackOriginal = $true
+        Ok "Existing plugins preserved at: $originalPluginsBackup"
+
+        if (Test-ReShadeFullAddon $originalPluginsBackup) {
+            Copy-Item -LiteralPath (Join-Path $originalPluginsBackup "dxgi.dll") -Destination (Join-Path $PluginsPath "dxgi.dll") -Force
+            Ok "Compatible existing ReShade loader migrated into clean plugins folder"
         }
     }
-}
-
-Step "Writing FiveM / RenoDX quality defaults"
-Set-IniValue $reshadeIni "ADDON" "AddonPath" "."
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "EnableHooks" "2"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NeuralUplift" "1"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NREnableUpscaling" "0"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRPreset" "0"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRStyle" "1"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRIntensity" "1.20"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRGlobalTone" "1.05"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRLocalTone" "1.05"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRLocalStructure" "1.35"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRSkinStructure" "1.00"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRAutoMask" "1"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRUICorrection" "1"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRDiffuseWhiteNits" "203"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRPaperWhiteScale" "1.0"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRTransferStrength" "1.0"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRColorStrength" "0.95"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRDepthMode" "0"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRMVecScaleX" "1.0"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRMVecScaleY" "1.0"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRToggleKey" "0"
-Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRScreenshotKey" "0"
-Set-IniValue $reshadeIni "SecretEMKO" "Profile" "3"
-Set-IniValue $reshadeIni "SecretEMKO" "FrameGenerationPolicy" "0"
-
-Copy-Item -LiteralPath (Join-Path $Root "config\dlss5-bridge.cfg") -Destination $bridgeCfg -Force
-Ok "Enhanced profile + synthetic D3D11 bridge configured"
-
-Step "Installing/updating integrated ReShade presets, shaders and official add-ons"
-$reshadeContentTool = Join-Path $Root "tools\Update-ReShadeContent.ps1"
-if (-not (Test-Path -LiteralPath $reshadeContentTool)) {
-    throw "Missing integrated ReShade updater: $reshadeContentTool"
-}
-& $reshadeContentTool -TargetDirectory $PluginsPath -Architecture 64
-Ok "ReShade Main/Stream content updated"
-
-Step "Writing install state"
-$managed = @(
-    "SecretEMKO.addon64",
-    "dlss5-bridge.addon64",
-    "renodx-dlss5.addon64",
-    "nvngx_dlssnr.dll",
-    "nvngx_dlss.dll",
-    "sl.interposer.dll",
-    "sl.common.dll",
-    "sl.dlss.dll",
-    "sl.dlss_g.dll",
-    "sl.dlss_nr.dll",
-    "sl.reflex.dll",
-    "sl.pcl.dll",
-    "sl.nis.dll",
-    "nvngx_dlssg.dll",
-    "dlss5-bridge.cfg",
-    "swapchain_override.addon64",
-    "Secret_Emko_Main.ini",
-    "Secret_Emko_Stream.ini"
-)
-$state = [ordered]@{
-    product = "SECRET EMKO Neural Graphics"
-    version = "2.0.0-rc1"
-    installed_at = (Get-Date).ToString("o")
-    plugins_path = $PluginsPath
-    backup_path = $Backup
-    managed_files = $managed
-    reshade_ini_backed_up = (Test-Path (Join-Path $Backup "ReShade.ini"))
-}
-$state | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $StateDir "install-state.json") -Encoding UTF8
-
-Step "Verification"
-$required = @(
-    "dxgi.dll",
-    "SecretEMKO.addon64",
-    "dlss5-bridge.addon64",
-    "renodx-dlss5.addon64",
-    "nvngx_dlssnr.dll",
-    "nvngx_dlss.dll",
-    "ReShade.ini",
-    "dlss5-bridge.cfg",
-    "swapchain_override.addon64",
-    "Secret_Emko_Main.ini",
-    "Secret_Emko_Stream.ini"
-)
-$missing = @()
-foreach ($name in $required) {
-    $p = Join-Path $PluginsPath $name
-    if (Test-Path -LiteralPath $p) {
-        $size = (Get-Item -LiteralPath $p).Length
-        Write-Host ("   [OK] {0,-26} {1,12:N0} bytes" -f $name,$size) -ForegroundColor Green
-    } else {
-        $missing += $name
-        Write-Host "   [MISSING] $name" -ForegroundColor Red
+    elseif (-not (Test-Path -LiteralPath $PluginsPath)) {
+        Ensure-Folder $PluginsPath
+        $createdFreshPlugins = $true
+        Ok "Created missing FiveM plugins folder"
+    }
+    elseif ($hasExistingContent) {
+        Warn "Merge mode selected: existing plugins stay active. Conflicting injectors/add-ons remain the user's responsibility."
     }
 }
-if ($missing.Count -gt 0) { throw "Installation incomplete: $($missing -join ', ')" }
+else {
+    Ok "Existing SECRET EMKO installation detected; updating in place"
+    if ($priorState.original_plugins_backup) { $originalPluginsBackup = [string]$priorState.original_plugins_backup }
+}
 
-Write-Host ""
-Write-Host "===============================================================" -ForegroundColor DarkGray
-Write-Host " SECRET EMKO installation complete." -ForegroundColor Green
-Write-Host " Start FiveM, open ReShade, then Add-ons -> SECRET EMKO Neural Graphics." -ForegroundColor White
-Write-Host " Recommended first profile: Enhanced." -ForegroundColor White
-Write-Host ""
-Write-Host " Keep ReShade.log and dlss5-bridge.log after the first test." -ForegroundColor Gray
-Write-Host " Frame Generation remains gated until the FiveM FG signal/pacing path is validated." -ForegroundColor Yellow
-Write-Host "===============================================================" -ForegroundColor DarkGray
+$StateDir = Join-Path $PluginsPath "SecretEMKO"
+$Backup = Join-Path $StateDir "backups\$Stamp"
+$LicenseDir = Join-Path $StateDir "licenses"
+Ensure-Folder $StateDir
+Ensure-Folder $LicenseDir
+Ensure-Folder $Cache
+
+$gpus = @(Get-GpuSummary)
+$rtx50 = Test-Rtx50 $gpus
+$neuralMode = $rtx50 -or $ForceNeuralStack
+$installMode = if ($neuralMode) { "full-neural" } else { "visual-compatibility" }
+
+Step "Hardware compatibility"
+if ($gpus.Count -gt 0) {
+    foreach ($gpu in $gpus) {
+        Write-Host ("   GPU: " + $gpu.Name + "  |  driver: " + $gpu.DriverVersion)
+    }
+} else {
+    Warn "GPU could not be identified through Win32_VideoController."
+}
+if ($neuralMode) {
+    if ($rtx50) { Ok "RTX 50-series detected: full DLSS 5 Neural Rendering stack enabled" }
+    else { Warn "-ForceNeuralStack enabled on non-RTX50 hardware; this is unsupported/experimental." }
+} else {
+    Warn "DLSS 5 3D-Guided Neural Rendering requires GeForce RTX 50-series hardware."
+    Write-Host "   SECRET EMKO will install in visual-compatibility mode: ReShade + presets + UI, without claiming Neural Rendering is available."
+}
+
+Warn "FiveM servers can disallow client plugins. SECRET EMKO does not bypass server plugin policy, Pure Mode, anti-cheat or ReShade restrictions."
+Warn "ReShade Full Add-on Support itself is intended for environments where add-ons are permitted. Use only on servers whose rules allow it."
+
+try {
+    Step "Checking/installing ReShade"
+    Install-ReShadeFullAddonHeadless $PluginsPath
+
+    Step "Backing up active managed configuration"
+    $reshadeIni = Join-Path $PluginsPath "ReShade.ini"
+    $bridgeCfg = Join-Path $PluginsPath "dlss5-bridge.cfg"
+    foreach ($name in @(
+        "ReShade.ini",
+        "dlss5-bridge.cfg",
+        "SecretEMKO.addon64",
+        "dlss5-bridge.addon64",
+        "renodx-dlss5.addon64",
+        "nvngx_dlssnr.dll",
+        "nvngx_dlss.dll",
+        "swapchain_override.addon64",
+        "Secret_Emko_Main.ini",
+        "Secret_Emko_Stream.ini"
+    )) {
+        Backup-IfExists (Join-Path $PluginsPath $name) $Backup
+    }
+    Ok "Update backup root: $Backup"
+
+    Step "Installing SECRET EMKO core"
+    Copy-Managed (Join-Path $Root "SecretEMKO.addon64") "SecretEMKO.addon64" $PluginsPath $Backup
+    Copy-Item -LiteralPath (Join-Path $Root "THIRD_PARTY_NOTICES.md") -Destination (Join-Path $LicenseDir "THIRD_PARTY_NOTICES.md") -Force
+    Copy-Item -LiteralPath (Join-Path $Root "LICENSE") -Destination (Join-Path $LicenseDir "SECRET_EMKO_LICENSE.txt") -Force
+    if (Test-Path (Join-Path $Root "licenses")) {
+        Copy-Item (Join-Path $Root "licenses\*") -Destination $LicenseDir -Recurse -Force
+    }
+
+    $managed = New-Object System.Collections.Generic.List[string]
+    [void]$managed.Add("SecretEMKO.addon64")
+
+    if ($neuralMode) {
+        Step "Installing neural runtime bridge"
+        Copy-Managed (Join-Path $Root "dlss5-bridge.addon64") "dlss5-bridge.addon64" $PluginsPath $Backup
+        [void]$managed.Add("dlss5-bridge.addon64")
+
+        Step "Downloading RenoDX DLSS 5 v4.70"
+        $renodxZip = Join-Path $Cache "renodx-dlss5_4.70.zip"
+        Download-Verified $Urls.RenoDX $renodxZip $Hashes.RenoDX
+        $renodxExtract = Join-Path $Cache "renodx-dlss5_4.70"
+        Expand-Fresh $renodxZip $renodxExtract
+        $consumer = Find-RequiredFile $renodxExtract "renodx-dlss5*.addon64"
+        Copy-Managed $consumer "renodx-dlss5.addon64" $PluginsPath $Backup
+        [void]$managed.Add("renodx-dlss5.addon64")
+
+        Step "Downloading NVIDIA DLSS Neural Rendering 310.8.0"
+        $nrZip = Join-Path $Cache "nvngx_dlssnr_310.8.0.zip"
+        Download-Verified $Urls.DlssNr $nrZip $Hashes.DlssNr
+        $nrExtract = Join-Path $Cache "nvngx_dlssnr_310.8.0"
+        Expand-Fresh $nrZip $nrExtract
+        $nrDll = Find-RequiredFile $nrExtract "nvngx_dlssnr.dll" $Rtx50NrDllHash
+        Copy-Managed $nrDll "nvngx_dlssnr.dll" $PluginsPath $Backup
+        [void]$managed.Add("nvngx_dlssnr.dll")
+
+        Step "Downloading NVIDIA DLSS Super Resolution 310.9.1"
+        $srZip = Join-Path $Cache "nvngx_dlss_310.9.1.zip"
+        Download-Verified $Urls.DlssSr $srZip $Hashes.DlssSr
+        $srExtract = Join-Path $Cache "nvngx_dlss_310.9.1"
+        Expand-Fresh $srZip $srExtract
+        $srDll = Find-RequiredFile $srExtract "nvngx_dlss.dll"
+        Copy-Managed $srDll "nvngx_dlss.dll" $PluginsPath $Backup
+        [void]$managed.Add("nvngx_dlss.dll")
+
+        if (-not $SkipStreamline) {
+            Step "Downloading NVIDIA Streamline 2.14.1"
+            $slZip = Join-Path $Cache "streamline-sdk-v2.14.1.zip"
+            Download-Verified $Urls.Streamline $slZip $Hashes.Streamline
+            $slExtract = Join-Path $Cache "streamline-sdk-v2.14.1"
+            Expand-Fresh $slZip $slExtract
+
+            foreach ($name in @(
+                "sl.interposer.dll",
+                "sl.common.dll",
+                "sl.dlss.dll",
+                "sl.dlss_g.dll",
+                "sl.dlss_nr.dll",
+                "sl.reflex.dll",
+                "sl.pcl.dll",
+                "sl.nis.dll",
+                "nvngx_dlssg.dll"
+            )) {
+                if (Copy-OptionalStreamlineFile $slExtract $name $PluginsPath $Backup) {
+                    [void]$managed.Add($name)
+                }
+            }
+
+            foreach ($notice in @("license.txt","3rd-party-licenses.md")) {
+                $found = @(Get-ChildItem -LiteralPath $slExtract -Recurse -File -Filter $notice -ErrorAction SilentlyContinue | Select-Object -First 1)
+                if ($found.Count -gt 0) {
+                    Copy-Item -LiteralPath $found[0].FullName -Destination (Join-Path $LicenseDir ("NVIDIA-Streamline-" + $notice)) -Force
+                }
+            }
+        }
+
+        Step "Writing FiveM / RenoDX quality defaults"
+        Set-IniValue $reshadeIni "ADDON" "AddonPath" "."
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "EnableHooks" "2"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NeuralUplift" "1"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NREnableUpscaling" "0"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRPreset" "0"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRStyle" "1"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRIntensity" "1.20"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRGlobalTone" "1.05"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRLocalTone" "1.05"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRLocalStructure" "1.35"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRSkinStructure" "1.00"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRAutoMask" "1"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRUICorrection" "1"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRDiffuseWhiteNits" "203"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRPaperWhiteScale" "1.0"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRTransferStrength" "1.0"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRColorStrength" "0.95"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRDepthMode" "0"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRMVecScaleX" "1.0"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRMVecScaleY" "1.0"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRToggleKey" "0"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRScreenshotKey" "0"
+        Set-IniValue $reshadeIni "SecretEMKO" "Profile" "3"
+        Set-IniValue $reshadeIni "SecretEMKO" "FrameGenerationPolicy" "0"
+        Set-IniValue $reshadeIni "SecretEMKO" "InstallMode" "full-neural"
+
+        Copy-Item -LiteralPath (Join-Path $Root "config\dlss5-bridge.cfg") -Destination $bridgeCfg -Force
+        [void]$managed.Add("dlss5-bridge.cfg")
+        Ok "Enhanced profile + synthetic D3D11 bridge configured"
+    }
+    else {
+        Step "Configuring visual-compatibility mode"
+        Set-IniValue $reshadeIni "ADDON" "AddonPath" "."
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NeuralUplift" "0"
+        Set-IniValue $reshadeIni "SecretEMKO" "Profile" "0"
+        Set-IniValue $reshadeIni "SecretEMKO" "FrameGenerationPolicy" "0"
+        Set-IniValue $reshadeIni "SecretEMKO" "InstallMode" "visual-compatibility"
+        Ok "Neural provider disabled; public ReShade visual stack remains available"
+    }
+
+    Step "Installing/updating integrated ReShade presets, shaders and official add-ons"
+    $reshadeContentTool = Join-Path $Root "tools\Update-ReShadeContent.ps1"
+    if (-not (Test-Path -LiteralPath $reshadeContentTool)) {
+        throw "Missing integrated ReShade updater: $reshadeContentTool"
+    }
+    & $reshadeContentTool -TargetDirectory $PluginsPath -Architecture 64
+    Ok "ReShade Main/Stream content updated"
+
+    foreach ($name in @("swapchain_override.addon64","Secret_Emko_Main.ini","Secret_Emko_Stream.ini")) {
+        if (-not $managed.Contains($name)) { [void]$managed.Add($name) }
+    }
+
+    Step "Writing install state"
+    $state = [ordered]@{
+        product = $Product
+        version = $Version
+        installed_at = (Get-Date).ToUniversalTime().ToString("o")
+        fivem_app_path = $FiveMApp
+        plugins_path = $PluginsPath
+        install_mode = $installMode
+        gpu = @($gpus)
+        original_plugins_backup = $originalPluginsBackup
+        existing_plugins_mode = $ExistingPluginsMode
+        created_fresh_plugins = $createdFreshPlugins
+        update_backup_path = $Backup
+        managed_files = @($managed)
+        reshade_full_addon = (Test-ReShadeFullAddon $PluginsPath)
+    }
+    $json = $state | ConvertTo-Json -Depth 6
+    $json | Set-Content -LiteralPath $GlobalStateFile -Encoding UTF8
+    $json | Set-Content -LiteralPath (Join-Path $StateDir "install-state.json") -Encoding UTF8
+    $rollbackOriginal = $false
+
+    Step "Verification"
+    $required = New-Object System.Collections.Generic.List[string]
+    foreach ($name in @(
+        "dxgi.dll",
+        "SecretEMKO.addon64",
+        "ReShade.ini",
+        "swapchain_override.addon64",
+        "Secret_Emko_Main.ini",
+        "Secret_Emko_Stream.ini"
+    )) { [void]$required.Add($name) }
+
+    if ($neuralMode) {
+        foreach ($name in @(
+            "dlss5-bridge.addon64",
+            "renodx-dlss5.addon64",
+            "nvngx_dlssnr.dll",
+            "nvngx_dlss.dll",
+            "dlss5-bridge.cfg"
+        )) { [void]$required.Add($name) }
+    }
+
+    $missing = @()
+    foreach ($name in $required) {
+        $p = Join-Path $PluginsPath $name
+        if (Test-Path -LiteralPath $p) {
+            $size = (Get-Item -LiteralPath $p).Length
+            Write-Host ("   [OK] {0,-28} {1,12:N0} bytes" -f $name,$size) -ForegroundColor Green
+        } else {
+            $missing += $name
+            Write-Host "   [MISSING] $name" -ForegroundColor Red
+        }
+    }
+    if ($missing.Count -gt 0) { throw "Installation incomplete: $($missing -join ', ')" }
+
+    Write-Host ""
+    Write-Host "================================================================" -ForegroundColor DarkGray
+    Write-Host " SECRET EMKO installation complete." -ForegroundColor Green
+    Write-Host (" Mode: " + $installMode) -ForegroundColor White
+    Write-Host (" Active plugins: " + $PluginsPath) -ForegroundColor White
+    if ($originalPluginsBackup) {
+        Write-Host (" Previous plugins preserved: " + $originalPluginsBackup) -ForegroundColor Gray
+    }
+    Write-Host " Start FiveM only on servers that permit client plugins / ReShade add-ons." -ForegroundColor Yellow
+    Write-Host " Frame Generation remains gated until the FiveM FG signal/pacing path is validated." -ForegroundColor Yellow
+    Write-Host "================================================================" -ForegroundColor DarkGray
+}
+catch {
+    $message = $_.Exception.Message
+    Warn "Installation failed: $message"
+
+    if ($rollbackOriginal -and $originalPluginsBackup -and (Test-Path -LiteralPath $originalPluginsBackup)) {
+        try {
+            $failedSnapshot = Join-Path $FiveMApp ("plugins.secret-emko-failed." + $Stamp)
+            if (Test-Path -LiteralPath $PluginsPath) {
+                Move-Item -LiteralPath $PluginsPath -Destination $failedSnapshot
+                Warn "Failed SECRET EMKO attempt preserved at: $failedSnapshot"
+            }
+            Move-Item -LiteralPath $originalPluginsBackup -Destination $PluginsPath
+            Ok "Original plugins folder restored automatically"
+        }
+        catch {
+            Warn "Automatic rollback also failed. Original backup remains at: $originalPluginsBackup"
+        }
+    }
+    elseif ($managedExisting) {
+        try {
+            Restore-UpdateBackup $Backup $PluginsPath
+            Warn "Managed files from the pre-update backup were restored where possible."
+        } catch {}
+    }
+
+    throw
+}
