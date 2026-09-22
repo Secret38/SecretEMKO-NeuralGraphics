@@ -128,6 +128,10 @@ replace_exact(nr,
               'if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 4.0f, "%.2f"))',
               'if (ImGui::SliderFloat("Colour strength", &colour, 0.0f, 2.0f, "%.2f"))')
 
+replace_exact(nr,
+              'if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, unlockPasses ? (float) MaxPassCount : 8.0f, "%.1fx"))',
+              'if (ImGui::SliderFloat("Highlight guard", &maxRatio, 1.0f, 8.0f, "%.1fx"))')
+
 anchor = '''        ImGui::SeparatorText("Model passes");
         ImGui::TextWrapped("Settings apply when you release a slider.");
         static const char* styles[] = { "Standard", "Natural", "Cinematic" };'''
