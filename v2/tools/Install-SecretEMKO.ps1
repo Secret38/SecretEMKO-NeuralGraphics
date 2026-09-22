@@ -4,8 +4,9 @@ param(
     [string]$FiveMPath = "",
     [ValidateSet("Isolate","Merge")]
     [string]$ExistingPluginsMode = "Isolate",
+    [ValidateSet("Auto","RPVisual","FullNeural")]
+    [string]$Mode = "Auto",
     [switch]$SkipStreamline,
-    [switch]$Force,
     [switch]$ForceNeuralStack,
     [switch]$NonInteractive
 )
@@ -237,44 +238,60 @@ function Find-RequiredFile([string]$RootPath, [string]$Name, [string]$Hash = "")
     return $all[0].FullName
 }
 
-function Test-ReShadeFullAddon([string]$Directory) {
+function Get-ReShadeMode([string]$Directory) {
     $dll = Join-Path $Directory "dxgi.dll"
-    if (-not (Test-Path -LiteralPath $dll)) { return $false }
+    if (-not (Test-Path -LiteralPath $dll)) { return "missing" }
+
     try {
+        $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($dll)
+        if ($info.ProductName -notlike "ReShade*") { return "foreign" }
+
         $bytes = [IO.File]::ReadAllBytes($dll)
         $ascii = [Text.Encoding]::ASCII.GetString($bytes)
-        return $ascii.Contains("ReShadeRegisterAddon")
-    } catch { return $false }
+        if ($ascii.Contains("only limited add-on functionality")) { return "standard" }
+        return "full-addon"
+    }
+    catch {
+        return "foreign"
+    }
 }
 
-function Get-LatestReShadeSetup {
+function Test-ReShadeFullAddon([string]$Directory) {
+    return (Get-ReShadeMode $Directory) -eq "full-addon"
+}
+
+function Get-LatestReShadeSetup([bool]$FullAddon) {
     $home = Invoke-WebRequest -UseBasicParsing -Uri "https://reshade.me/" -Headers @{ "User-Agent" = "SecretEMKO-v2" }
     if ($home.Content -notmatch 'Version\s+([0-9]+\.[0-9]+\.[0-9]+)') {
         throw "Could not resolve the current ReShade version from reshade.me."
     }
     $version = $Matches[1]
+    $suffix = if ($FullAddon) { "_Addon" } else { "" }
     return [pscustomobject]@{
         Version = $version
-        Url = ("https://reshade.me/downloads/ReShade_Setup_" + $version + "_Addon.exe")
+        FullAddon = $FullAddon
+        Url = ("https://reshade.me/downloads/ReShade_Setup_" + $version + $suffix + ".exe")
+        FileName = ("ReShade_Setup_" + $version + $suffix + ".exe")
     }
 }
 
-function Install-ReShadeFullAddonHeadless([string]$Directory) {
-    if (Test-ReShadeFullAddon $Directory) {
-        Ok "ReShade Full Add-on Support detected"
+function Install-ReShadeHeadless([string]$Directory, [bool]$FullAddon) {
+    $expected = if ($FullAddon) { "full-addon" } else { "standard" }
+    $existing = Get-ReShadeMode $Directory
+    if ($existing -eq $expected) {
+        Ok ("ReShade " + $expected + " build detected")
         return
     }
-
-    $existingDxgi = Join-Path $Directory "dxgi.dll"
-    if (Test-Path -LiteralPath $existingDxgi) {
-        throw "A non-ReShade dxgi.dll already exists in the active plugins folder. Re-run with the default Isolate mode or remove the conflicting proxy."
+    if ($existing -eq "foreign") {
+        throw "A foreign dxgi.dll already exists in the active plugins folder. Use the default Isolate mode instead of mixing graphics proxies."
     }
 
-    $setupInfo = Get-LatestReShadeSetup
+    $setupInfo = Get-LatestReShadeSetup $FullAddon
     Ensure-Folder $Cache
-    $setup = Join-Path $Cache ("ReShade_Setup_" + $setupInfo.Version + "_Addon.exe")
+    $setup = Join-Path $Cache $setupInfo.FileName
     if (-not (Test-Path -LiteralPath $setup)) {
-        Step ("Downloading official ReShade " + $setupInfo.Version + " Full Add-on Support")
+        $label = if ($FullAddon) { "Full Add-on Support" } else { "standard signed build" }
+        Step ("Downloading official ReShade " + $setupInfo.Version + " " + $label)
         Invoke-WebRequest -UseBasicParsing -Uri $setupInfo.Url -OutFile $setup -Headers @{ "User-Agent" = "SecretEMKO-v2" }
     }
 
@@ -284,9 +301,19 @@ function Install-ReShadeFullAddonHeadless([string]$Directory) {
     Copy-Item -LiteralPath $hostSource -Destination $host -Force
 
     try {
-        Step "Installing ReShade Full Add-on Support automatically"
-        $args = @("--headless", "--api", "dxgi", $host)
-        $proc = Start-Process -FilePath $setup -ArgumentList $args -Wait -PassThru
+        $label = if ($FullAddon) { "Full Add-on Support" } else { "standard signed build" }
+        Step ("Installing ReShade " + $label + " automatically")
+        $args = New-Object System.Collections.Generic.List[string]
+        [void]$args.Add("--headless")
+        if ($existing -eq "standard" -or $existing -eq "full-addon") {
+            [void]$args.Add("--state")
+            [void]$args.Add("update")
+        }
+        [void]$args.Add("--api")
+        [void]$args.Add("dxgi")
+        [void]$args.Add($host)
+
+        $proc = Start-Process -FilePath $setup -ArgumentList @($args) -Wait -PassThru
         if ($proc.ExitCode -ne 0) {
             throw "ReShade setup returned exit code $($proc.ExitCode)."
         }
@@ -295,10 +322,11 @@ function Install-ReShadeFullAddonHeadless([string]$Directory) {
         Remove-Item -LiteralPath $host -Force -ErrorAction SilentlyContinue
     }
 
-    if (-not (Test-ReShadeFullAddon $Directory)) {
-        throw "ReShade Full Add-on Support was not installed into the FiveM plugins folder."
+    $actual = Get-ReShadeMode $Directory
+    if ($actual -ne $expected) {
+        throw "ReShade verification failed. Expected '$expected', detected '$actual'."
     }
-    Ok "ReShade Full Add-on Support installed"
+    Ok ("ReShade " + $expected + " build installed")
 }
 
 function Backup-IfExists([string]$Path, [string]$BackupRoot) {
@@ -426,6 +454,64 @@ if ($priorState -and $priorState.product -eq $Product -and $priorState.plugins_p
     $managedExisting = $true
 }
 
+$gpus = @(Get-GpuSummary)
+$rtx50 = Test-Rtx50 $gpus
+$resolvedMode = $Mode
+
+if ($Mode -eq "Auto") {
+    if ($managedExisting -and $priorState.install_mode) {
+        if ([string]$priorState.install_mode -eq "full-neural") { $resolvedMode = "FullNeural" }
+        else { $resolvedMode = "RPVisual" }
+    }
+    elseif ($ForceNeuralStack) {
+        $resolvedMode = "FullNeural"
+    }
+    elseif ($rtx50 -and -not $NonInteractive) {
+        Write-Host ""
+        Write-Host "RTX 50-series detected." -ForegroundColor Cyan
+        Write-Host "Choose installation mode:"
+        Write-Host "  [1] RP Visual (recommended for multiplayer / unknown server policy)"
+        Write-Host "      Signed standard ReShade + Main/Stream presets. No external ReShade add-ons."
+        Write-Host "  [2] Full Neural"
+        Write-Host "      ReShade Full Add-on + SECRET EMKO/RenoDX/DLSS 5. Use only where the server explicitly permits this stack."
+        $choice = Read-Host "Mode [1]"
+        $resolvedMode = if ($choice -eq "2") { "FullNeural" } else { "RPVisual" }
+    }
+    else {
+        $resolvedMode = "RPVisual"
+    }
+}
+
+if ($resolvedMode -eq "FullNeural" -and -not $rtx50 -and -not $ForceNeuralStack) {
+    throw "Full Neural mode requires a detected GeForce RTX 50-series GPU. Use RPVisual on this system."
+}
+
+$neuralMode = $resolvedMode -eq "FullNeural"
+$installMode = if ($neuralMode) { "full-neural" } else { "rp-visual" }
+
+Step "Hardware / multiplayer mode"
+if ($gpus.Count -gt 0) {
+    foreach ($gpu in $gpus) {
+        Write-Host ("   GPU: " + $gpu.Name + "  |  driver: " + $gpu.DriverVersion)
+    }
+} else {
+    Warn "GPU could not be identified through Win32_VideoController."
+}
+
+if ($neuralMode) {
+    if ($rtx50) { Ok "Full Neural mode selected on RTX 50-series hardware" }
+    else { Warn "Full Neural was forced on unsupported/unverified hardware." }
+    Warn "This mode requires ReShade Full Add-on Support. ReShade documents that build as singleplayer-oriented and warns it may cause bans in multiplayer."
+    Warn "Use Full Neural only on servers/environments where this client add-on stack is explicitly permitted."
+} else {
+    Ok "RP Visual mode selected"
+    Write-Host "   Uses the signed standard ReShade build and post-processing presets only."
+    if (-not $rtx50) {
+        Write-Host "   DLSS 5 3D-Guided Neural Rendering is not enabled on this GPU."
+    }
+}
+Warn "FiveM servers can disallow client plugins. SECRET EMKO does not bypass server plugin policy, Pure Mode, anti-cheat or ReShade restrictions."
+
 $originalPluginsBackup = $null
 $createdFreshPlugins = $false
 $rollbackOriginal = $false
@@ -444,11 +530,6 @@ if (-not $managedExisting) {
         $createdFreshPlugins = $true
         $rollbackOriginal = $true
         Ok "Existing plugins preserved at: $originalPluginsBackup"
-
-        if (Test-ReShadeFullAddon $originalPluginsBackup) {
-            Copy-Item -LiteralPath (Join-Path $originalPluginsBackup "dxgi.dll") -Destination (Join-Path $PluginsPath "dxgi.dll") -Force
-            Ok "Compatible existing ReShade loader migrated into clean plugins folder"
-        }
 
         $oldShaderRoot = Join-Path $originalPluginsBackup "reshade-shaders"
         if (Test-Path -LiteralPath $oldShaderRoot) {
@@ -477,33 +558,9 @@ Ensure-Folder $StateDir
 Ensure-Folder $LicenseDir
 Ensure-Folder $Cache
 
-$gpus = @(Get-GpuSummary)
-$rtx50 = Test-Rtx50 $gpus
-$neuralMode = $rtx50 -or $ForceNeuralStack
-$installMode = if ($neuralMode) { "full-neural" } else { "visual-compatibility" }
-
-Step "Hardware compatibility"
-if ($gpus.Count -gt 0) {
-    foreach ($gpu in $gpus) {
-        Write-Host ("   GPU: " + $gpu.Name + "  |  driver: " + $gpu.DriverVersion)
-    }
-} else {
-    Warn "GPU could not be identified through Win32_VideoController."
-}
-if ($neuralMode) {
-    if ($rtx50) { Ok "RTX 50-series detected: full DLSS 5 Neural Rendering stack enabled" }
-    else { Warn "-ForceNeuralStack enabled on non-RTX50 hardware; this is unsupported/experimental." }
-} else {
-    Warn "DLSS 5 3D-Guided Neural Rendering requires GeForce RTX 50-series hardware."
-    Write-Host "   SECRET EMKO will install in visual-compatibility mode: ReShade + presets + UI, without claiming Neural Rendering is available."
-}
-
-Warn "FiveM servers can disallow client plugins. SECRET EMKO does not bypass server plugin policy, Pure Mode, anti-cheat or ReShade restrictions."
-Warn "ReShade Full Add-on Support itself is intended for environments where add-ons are permitted. Use only on servers whose rules allow it."
-
 try {
     Step "Checking/installing ReShade"
-    Install-ReShadeFullAddonHeadless $PluginsPath
+    Install-ReShadeHeadless $PluginsPath $neuralMode
 
     Step "Backing up active managed configuration"
     $reshadeIni = Join-Path $PluginsPath "ReShade.ini"
@@ -524,8 +581,7 @@ try {
     }
     Ok "Update backup root: $Backup"
 
-    Step "Installing SECRET EMKO core"
-    Copy-Managed (Join-Path $Root "SecretEMKO.addon64") "SecretEMKO.addon64" $PluginsPath $Backup
+    Step "Installing SECRET EMKO package metadata"
     Copy-Item -LiteralPath (Join-Path $Root "THIRD_PARTY_NOTICES.md") -Destination (Join-Path $LicenseDir "THIRD_PARTY_NOTICES.md") -Force
     Copy-Item -LiteralPath (Join-Path $Root "LICENSE") -Destination (Join-Path $LicenseDir "SECRET_EMKO_LICENSE.txt") -Force
     if (Test-Path (Join-Path $Root "licenses")) {
@@ -533,9 +589,11 @@ try {
     }
 
     $managed = New-Object System.Collections.Generic.List[string]
-    [void]$managed.Add("SecretEMKO.addon64")
 
     if ($neuralMode) {
+        Step "Installing SECRET EMKO neural add-on stack"
+        Copy-Managed (Join-Path $Root "SecretEMKO.addon64") "SecretEMKO.addon64" $PluginsPath $Backup
+        [void]$managed.Add("SecretEMKO.addon64")
         Step "Installing neural runtime bridge"
         Copy-Managed (Join-Path $Root "dlss5-bridge.addon64") "dlss5-bridge.addon64" $PluginsPath $Backup
         [void]$managed.Add("dlss5-bridge.addon64")
@@ -630,13 +688,9 @@ try {
         Ok "Enhanced profile + synthetic D3D11 bridge configured"
     }
     else {
-        Step "Configuring visual-compatibility mode"
-        Set-IniValue $reshadeIni "ADDON" "AddonPath" "."
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NeuralUplift" "0"
-        Set-IniValue $reshadeIni "SecretEMKO" "Profile" "0"
-        Set-IniValue $reshadeIni "SecretEMKO" "FrameGenerationPolicy" "0"
-        Set-IniValue $reshadeIni "SecretEMKO" "InstallMode" "visual-compatibility"
-        Ok "Neural provider disabled; public ReShade visual stack remains available"
+        Step "Configuring RP Visual mode"
+        Set-IniValue $reshadeIni "SecretEMKO" "InstallMode" "rp-visual"
+        Ok "Standard ReShade visual stack selected; external add-ons and Neural Rendering remain inactive"
     }
 
     Step "Installing/updating integrated ReShade presets, shaders and official add-ons"
@@ -644,10 +698,16 @@ try {
     if (-not (Test-Path -LiteralPath $reshadeContentTool)) {
         throw "Missing integrated ReShade updater: $reshadeContentTool"
     }
-    & $reshadeContentTool -TargetDirectory $PluginsPath -Architecture 64
+    if ($neuralMode) {
+        & $reshadeContentTool -TargetDirectory $PluginsPath -Architecture 64
+        if (-not $managed.Contains("swapchain_override.addon64")) { [void]$managed.Add("swapchain_override.addon64") }
+    }
+    else {
+        & $reshadeContentTool -TargetDirectory $PluginsPath -Architecture 64 -SkipAddon -SkipCoreCheck
+    }
     Ok "ReShade Main/Stream content updated"
 
-    foreach ($name in @("swapchain_override.addon64","Secret_Emko_Main.ini","Secret_Emko_Stream.ini")) {
+    foreach ($name in @("Secret_Emko_Main.ini","Secret_Emko_Stream.ini")) {
         if (-not $managed.Contains($name)) { [void]$managed.Add($name) }
     }
 
@@ -665,7 +725,7 @@ try {
         created_fresh_plugins = $createdFreshPlugins
         update_backup_path = $Backup
         managed_files = @($managed)
-        reshade_full_addon = (Test-ReShadeFullAddon $PluginsPath)
+        reshade_mode = (Get-ReShadeMode $PluginsPath)
     }
     $json = $state | ConvertTo-Json -Depth 6
     $json | Set-Content -LiteralPath $GlobalStateFile -Encoding UTF8
@@ -676,15 +736,15 @@ try {
     $required = New-Object System.Collections.Generic.List[string]
     foreach ($name in @(
         "dxgi.dll",
-        "SecretEMKO.addon64",
         "ReShade.ini",
-        "swapchain_override.addon64",
         "Secret_Emko_Main.ini",
         "Secret_Emko_Stream.ini"
     )) { [void]$required.Add($name) }
 
     if ($neuralMode) {
         foreach ($name in @(
+            "SecretEMKO.addon64",
+            "swapchain_override.addon64",
             "dlss5-bridge.addon64",
             "renodx-dlss5.addon64",
             "nvngx_dlssnr.dll",
@@ -714,8 +774,12 @@ try {
     if ($originalPluginsBackup) {
         Write-Host (" Previous plugins preserved: " + $originalPluginsBackup) -ForegroundColor Gray
     }
-    Write-Host " Start FiveM only on servers that permit client plugins / ReShade add-ons." -ForegroundColor Yellow
-    Write-Host " Frame Generation remains gated until the FiveM FG signal/pacing path is validated." -ForegroundColor Yellow
+    if ($neuralMode) {
+        Write-Host " Full Neural uses ReShade Full Add-on Support: use only where the server explicitly permits it." -ForegroundColor Yellow
+        Write-Host " Frame Generation remains gated until the FiveM FG signal/pacing path is validated." -ForegroundColor Yellow
+    } else {
+        Write-Host " RP Visual uses standard ReShade only; individual server plugin policy can still block it." -ForegroundColor Yellow
+    }
     Write-Host "================================================================" -ForegroundColor DarkGray
 }
 catch {
