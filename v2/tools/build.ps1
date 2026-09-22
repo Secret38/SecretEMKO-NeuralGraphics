@@ -58,7 +58,7 @@ if (Test-Path (Join-Path $dxcExtract "bin\x64\dxil.dll")) {
 # Let RenoDX manage Slang and copy FXC from the installed Windows SDK.
 Push-Location $src
 try {
-    & ".\scripts\setup-dev-env.ps1" -Update -Tools @("slang")
+    & ".\scripts\setup-dev-env.ps1" -Update -Tools @("slang", "glslang")
     if ($LASTEXITCODE -ne 0) { throw "RenoDX dev tool setup failed" }
 }
 finally { Pop-Location }
