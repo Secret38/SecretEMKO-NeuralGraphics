@@ -82,6 +82,29 @@ jobs:
           $ascii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($dll))
           if ($ascii.Contains("only limited add-on functionality")) { throw "Expected Full Add-on build, detected limited standard build" }
 
+      - name: Reject source ZIP Full Neural before FiveM modification
+        shell: powershell
+        run: |
+          $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Source ZIP Preflight"
+          $app = Join-Path $fake "FiveM.app"
+          $plugins = Join-Path $app "plugins"
+          New-Item -ItemType Directory -Path $plugins -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $app "CitizenFX.ini") -Value "[Game]"
+          Set-Content -LiteralPath (Join-Path $plugins "sentinel.txt") -Value "must-remain"
+
+          $failed = $false
+          try {
+            .\v2\tools\Install-SecretEMKO.ps1 -FiveMPath $fake -Mode FullNeural -ForceNeuralStack -NonInteractive
+          }
+          catch {
+            $failed = $true
+            if ($_.Exception.Message -notmatch "built RC2 artifact") { throw }
+          }
+
+          if (-not $failed) { throw "Source tree unexpectedly accepted Full Neural." }
+          if (-not (Test-Path (Join-Path $plugins "sentinel.txt"))) { throw "Source preflight modified the existing plugins folder." }
+          if (@(Get-ChildItem -LiteralPath $app -Directory -Filter "plugins.before-secret-emko.*").Count -ne 0) { throw "Source preflight isolated plugins before package validation." }
+
       - name: Build RenoDX-native addon and package
         shell: powershell
         run: |

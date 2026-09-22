@@ -1,0 +1,26 @@
+# SECRET EMKO local build/output
+/work/
+/output/
+/v2/work-v2/
+/v2/dist/
+
+# Build systems / IDE
+/.vs/
+**/.vs/
+**/CMakeFiles/
+**/CMakeCache.txt
+*.suo
+*.user
+
+# Python
+**/__pycache__/
+*.pyc
+
+# Temporary downloads/logs
+*.partial
+*.tmp
+*.log
+
+# OS/editor noise
+.DS_Store
+Thumbs.db

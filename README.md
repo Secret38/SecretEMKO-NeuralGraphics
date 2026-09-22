@@ -1,21 +1,49 @@
 # SECRET EMKO Neural Graphics
 
-FiveM GTA V Legacy neural-graphics project.
+Current product: **v2.0.0-rc2** for FiveM GTA V Legacy x64.
 
-## v2 RC2
+## End users: use the built package
 
-RC2 separates broad RP compatibility from the advanced neural add-on path.
+**Do not use GitHub `Code -> Download ZIP` as the Full Neural installer.** The source archive intentionally does not contain the compiled `SecretEMKO.addon64` and packaged bridge.
 
-- `INSTALL_SECRET_EMKO.bat` is the default **RP Visual** installer: standard signed ReShade, Main/Stream presets and public shader dependencies, with no external ReShade add-ons.
-- `INSTALL_SECRET_EMKO_FULL_NEURAL.bat` is the explicit **Full Neural** installer for RTX 50 Series systems where the server/environment permits the ReShade Full Add-on stack.
-- Standard/custom FiveM Legacy paths are resolved automatically where possible.
+Use the latest successful GitHub Actions artifact named:
+
+```text
+SecretEMKO-NeuralGraphics-v2.0.0-rc2
+```
+
+Extract it completely, close FiveM/GTA V, then run one of:
+
+```text
+INSTALL_SECRET_EMKO.bat
+INSTALL_SECRET_EMKO_FULL_NEURAL.bat
+```
+
+- **RP Visual** is the default path for ordinary RP use: official standard ReShade + Main/Stream presets + public shader dependencies.
+- **Full Neural** is the explicit RTX 50 Series path for environments where the server/user policy permits ReShade Full Add-on client add-ons.
 - Missing `FiveM.app\plugins` is created automatically.
-- Existing plugins are isolated as `plugins.before-secret-emko.<timestamp>`; only `reshade-shaders` is migrated automatically.
-- Failed first installs attempt rollback, and uninstall restores the original plugins directory.
-- FiveM Enhanced is not modified by the Legacy installer.
-- Missing proprietary preset effects are disabled in the installed preset rather than downloaded from unofficial mirrors.
-- Frame Generation remains gated; the current DLSS 5 path is treated as one real pass.
+- An existing unrelated `plugins` directory is isolated as `plugins.before-secret-emko.<timestamp>` instead of being modified in place.
+- Failed first installs attempt automatic rollback.
+- Uninstall restores the preserved pre-SECRET-EMKO plugins directory.
+- FiveM Enhanced is not modified by this Legacy release.
+- Proprietary effects such as QuantV are never fetched from unofficial mirrors.
+- Frame Generation remains gated; DLL presence is not treated as proof of a functional FiveM FG path.
 
-FiveM server plugin policy, Pure Mode, anti-cheat and ReShade restrictions are respected; RC2 contains no bypass.
+FiveM server plugin policy, Pure Mode, anti-cheat and ReShade restrictions are respected; SECRET EMKO contains no bypass.
 
-See `v2/README.md`, `v2/COMPATIBILITY.md`, `v2/VERSIONS.json` and `v2/MAIN-SYSTEM.json`.
+## Repository layout
+
+```text
+v2/          active product, installer, RenoDX add-on source, presets and policy
+legacy/v1/   archival note for the retired v1 prototype
+.github/     active v2 CI only
+```
+
+Current technical details:
+
+- `v2/README.md`
+- `v2/COMPATIBILITY.md`
+- `v2/VERSIONS.json`
+- `v2/MAIN-SYSTEM.json`
+
+The Windows CI validates PowerShell syntax, live ReShade catalogs, official ReShade installation, RenoDX compilation, source-ZIP rejection before FiveM modification, plugin isolation/restore, missing-plugin-folder creation, unsupported Full Neural rejection, release contents and artifact upload.

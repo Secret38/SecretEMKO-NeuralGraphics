@@ -544,6 +544,32 @@ if ($neuralMode) {
 }
 Warn "FiveM servers can disallow client plugins. SECRET EMKO does not bypass server plugin policy, Pure Mode, anti-cheat or ReShade restrictions."
 
+# Distribution preflight: the GitHub source archive intentionally does not contain
+# the compiled native add-ons. Refuse Full Neural before touching FiveM if the
+# user launched the installer from a source checkout/Code->Download ZIP.
+if ($neuralMode) {
+    $requiredPackageFiles = @(
+        (Join-Path $Root "BUILD-MANIFEST.json"),
+        (Join-Path $Root "SecretEMKO.addon64"),
+        (Join-Path $Root "dlss5-bridge.addon64")
+    )
+    $missingPackageFiles = @($requiredPackageFiles | Where-Object { -not (Test-Path -LiteralPath $_) })
+    if ($missingPackageFiles.Count -gt 0) {
+        Write-Host ""
+        Write-Host "FULL NEURAL PACKAGE PRECHECK FAILED" -ForegroundColor Red
+        Write-Host "This folder is a source checkout/source ZIP, not the built SECRET EMKO RC2 package." -ForegroundColor Yellow
+        Write-Host "Do not use GitHub 'Code -> Download ZIP' for Full Neural." -ForegroundColor Yellow
+        Write-Host "Download the successful GitHub Actions artifact named:" -ForegroundColor Yellow
+        Write-Host "  SecretEMKO-NeuralGraphics-v2.0.0-rc2" -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "Missing packaged files:" -ForegroundColor Gray
+        foreach ($missingFile in $missingPackageFiles) {
+            Write-Host ("  - " + (Split-Path -Leaf $missingFile)) -ForegroundColor Gray
+        }
+        throw "Full Neural requires the built RC2 artifact. No FiveM plugins have been modified by this precheck."
+    }
+}
+
 $originalPluginsBackup = $null
 $createdFreshPlugins = $false
 $rollbackOriginal = $false
