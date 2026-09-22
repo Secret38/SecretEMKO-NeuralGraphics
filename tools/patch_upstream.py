@@ -74,6 +74,15 @@ for old,new,count in [
 replace_exact("OptiScaler/Config.h",'std::wstring fileName = L"OptiScaler.ini";','std::wstring fileName = L"SecretEMKO.ini";')
 replace_exact("OptiScaler/Config.h",'CustomOptional<std::wstring> LogFileName { L"OptiScaler.log" };','CustomOptional<std::wstring> LogFileName { L"SecretEMKO.log" };')
 
+# FiveM/GTA V Legacy creates its D3D11 device with the feature levels it expects.
+# Upstream OptiScaler can elevate a game's 11_0 request to 11_1; on FiveM this can make
+# RAGE treat device creation as unsupported and abort with ERR_GFX_D3D_NOFEATURELEVEL_1.
+# Keep the game's requested feature-level list untouched for this FiveM-specific build.
+replace_exact("OptiScaler/hooks/D3D11_Hooks.cpp",
+              'if (!(State::Instance().gameQuirks & GameQuirk::SkipD3D11FeatureLevelElevation))',
+              'if (false && !(State::Instance().gameQuirks & GameQuirk::SkipD3D11FeatureLevelElevation))',
+              2)
+
 # FiveM build resources.
 rc_rel = "OptiScaler/OptiScaler.rc"
 rc = read(rc_rel)
