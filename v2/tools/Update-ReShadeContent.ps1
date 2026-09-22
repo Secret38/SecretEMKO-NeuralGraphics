@@ -97,9 +97,11 @@ function Test-ReShadeFullAddon([string]$Directory) {
     $dll = Join-Path $Directory "dxgi.dll"
     if (-not (Test-Path -LiteralPath $dll)) { return $false }
     try {
+        $info = [Diagnostics.FileVersionInfo]::GetVersionInfo($dll)
+        if ($info.ProductName -notlike "ReShade*") { return $false }
         $bytes = [IO.File]::ReadAllBytes($dll)
         $ascii = [Text.Encoding]::ASCII.GetString($bytes)
-        return $ascii.Contains("ReShadeRegisterAddon")
+        return -not $ascii.Contains("only limited add-on functionality")
     }
     catch { return $false }
 }
