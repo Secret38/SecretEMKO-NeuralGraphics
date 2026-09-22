@@ -226,6 +226,7 @@ if (-not $SkipReShadeAssets) {
 Step "Installing SECRET EMKO and DLSS 5 Bridge"
 Copy-Managed (Join-Path $Root "SecretEMKO.addon64") "SecretEMKO.addon64"
 Copy-Managed (Join-Path $Root "dlss5-bridge.addon64") "dlss5-bridge.addon64"
+Copy-Managed (Join-Path $Root "swapchain_override.addon64") "swapchain_override.addon64"
 Copy-Item -LiteralPath (Join-Path $Root "THIRD_PARTY_NOTICES.md") -Destination (Join-Path $LicenseDir "THIRD_PARTY_NOTICES.md") -Force
 Copy-Item -LiteralPath (Join-Path $Root "LICENSE") -Destination (Join-Path $LicenseDir "SECRET_EMKO_LICENSE.txt") -Force
 if (Test-Path (Join-Path $Root "licenses")) {
@@ -357,6 +358,7 @@ $required = @(
     "ReShade.ini",
     "Secret_Emko_Main.ini",
     "Secret_Emko_Stream.ini",
+    "swapchain_override.addon64",
     "dlss5-bridge.cfg"
 )
 $missing = @()
