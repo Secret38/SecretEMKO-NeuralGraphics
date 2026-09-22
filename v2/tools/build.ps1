@@ -55,7 +55,7 @@ $built = Get-ChildItem -LiteralPath $buildDir -Recurse -File -Filter "renodx-sec
 if (-not $built) { throw "renodx-secretemko.addon64 not found after build" }
 
 $distRoot = Join-Path $RepoRoot "dist"
-$stage = Join-Path $distRoot "SecretEMKO-NeuralGraphics-v2.0.0-rc1"
+$stage = Join-Path $distRoot "SecretEMKO-NeuralGraphics-v2.0.0-rc2"
 $zip = "$stage.zip"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 if (Test-Path $zip) { Remove-Item $zip -Force }
@@ -82,6 +82,7 @@ Copy-Item (Join-Path $RepoRoot "THIRD_PARTY_NOTICES.md") (Join-Path $stage "THIR
 Copy-Item (Join-Path $RepoRoot "config\dlss5-bridge.cfg") (Join-Path $stage "config\dlss5-bridge.cfg") -Force
 Copy-Item (Join-Path $RepoRoot "tools\Install-SecretEMKO.ps1") (Join-Path $stage "tools\Install-SecretEMKO.ps1") -Force
 Copy-Item (Join-Path $RepoRoot "tools\Update-ReShadeContent.ps1") (Join-Path $stage "tools\Update-ReShadeContent.ps1") -Force
+Copy-Item (Join-Path $RepoRoot "tools\Prepare-FiveMPlugins.ps1") (Join-Path $stage "tools\Prepare-FiveMPlugins.ps1") -Force
 Copy-Item (Join-Path $RepoRoot "config\ReShade.SecretEMKO.ini") (Join-Path $stage "config\ReShade.SecretEMKO.ini") -Force
 Copy-Item (Join-Path $RepoRoot "presets\Secret_Emko_Main.ini") (Join-Path $stage "presets\Secret_Emko_Main.ini") -Force
 Copy-Item (Join-Path $RepoRoot "presets\Secret_Emko_Stream.ini") (Join-Path $stage "presets\Secret_Emko_Stream.ini") -Force
@@ -102,7 +103,7 @@ Copy-Item $reshadeLicense (Join-Path $stage "licenses\ReShade-LICENSE.md") -Forc
 
 $manifest = [ordered]@{
     product = "SECRET EMKO Neural Graphics"
-    version = "2.0.0-rc1"
+    version = "2.0.0-rc2"
     built = (Get-Date).ToUniversalTime().ToString("o")
     renodx_commit = $Commit
     bridge_version = "1.4.12"
