@@ -20,10 +20,10 @@ NIGos/dlss5-bridge
 Copyright (c) 2026 NIGos and contributors  
 License: MIT.
 
-The stable bridge binary is obtained from its official GitHub release during the release build and may be included with this package under its MIT license.
+Preview2 uses the official immutable v1.4.13-pre8 release artifact from GitHub. It remains a prerelease. The binary is included under the project's MIT terms together with its attribution/licence notices.
 
 ## RenoDX DLSS 5 neural consumer
-The separately distributed `renodx-dlss5.addon64` is not source code from the public RenoDX main repository. SECRET EMKO does not claim ownership of it and does not repackage it in Git. The installer fetches the pinned public release package used by current DLSS5-Feeder tooling.
+The separately distributed `renodx-dlss5.addon64` is not source code from the public RenoDX main repository. SECRET EMKO does not claim ownership of it and does not store or redistribute that binary in this repository. Preview2 can download either the current external 6.5.3 package or a 4.55 compatibility package at local install time after showing a provenance notice. These external packages are not relicensed as SECRET EMKO code.
 
 ## NVIDIA
 DLSS, DLSS Neural Rendering, DLSS Frame Generation, NGX and Streamline are NVIDIA technologies. Their proprietary runtime binaries are not relicensed as SECRET EMKO code. The installer downloads pinned runtime packages separately and preserves applicable NVIDIA notices.
