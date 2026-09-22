@@ -156,6 +156,10 @@ function Resolve-FiveMAppPath {
     if ($PluginsPath) {
         $fromPlugins = Normalize-FiveMAppPath $PluginsPath
         if ($fromPlugins) { return $fromPlugins }
+
+        $pluginsParent = Split-Path -Parent ([IO.Path]::GetFullPath($PluginsPath))
+        if (Test-FiveMAppPath $pluginsParent) { return $pluginsParent }
+
         throw "-PluginsPath does not point to a valid FiveM Legacy application-data plugins path: $PluginsPath"
     }
 
@@ -448,6 +452,12 @@ if (-not $managedExisting) {
         if (Test-ReShadeFullAddon $originalPluginsBackup) {
             Copy-Item -LiteralPath (Join-Path $originalPluginsBackup "dxgi.dll") -Destination (Join-Path $PluginsPath "dxgi.dll") -Force
             Ok "Compatible existing ReShade loader migrated into clean plugins folder"
+        }
+
+        $oldShaderRoot = Join-Path $originalPluginsBackup "reshade-shaders"
+        if (Test-Path -LiteralPath $oldShaderRoot) {
+            Copy-Item -LiteralPath $oldShaderRoot -Destination (Join-Path $PluginsPath "reshade-shaders") -Recurse -Force
+            Ok "Existing ReShade shader library migrated; old add-ons and proxy DLLs remain isolated"
         }
     }
     elseif (-not (Test-Path -LiteralPath $PluginsPath)) {
