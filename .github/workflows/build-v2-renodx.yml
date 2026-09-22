@@ -24,6 +24,25 @@ jobs:
           git --version
           cmake --version
 
+      - name: Validate PowerShell installers
+        shell: powershell
+        run: |
+          $files = @(
+            ".\v2\tools\Install-SecretEMKO.ps1",
+            ".\v2\tools\Install-ReShadeAssets.ps1",
+            ".\v2\tools\Uninstall-SecretEMKO.ps1",
+            ".\v2\tools\build.ps1"
+          )
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error "$file: $($_.Message)" }
+              throw "PowerShell syntax validation failed: $file"
+            }
+          }
+
       - name: Build RenoDX-native addon and package
         shell: powershell
         run: |
