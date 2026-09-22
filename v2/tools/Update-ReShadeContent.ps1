@@ -199,7 +199,7 @@ function Get-IniLines([string]$Path) {
     if (Test-Path -LiteralPath $Path) {
         foreach ($line in Get-Content -LiteralPath $Path) { [void]$lines.Add($line) }
     }
-    return $lines
+    return ,$lines
 }
 
 function Set-IniValue([string]$Path, [string]$Section, [string]$Key, [string]$Value) {
