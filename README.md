@@ -1,6 +1,6 @@
 # SECRET EMKO Neural Graphics
 
-Current product: **v2.0.0-rc2** for FiveM GTA V Legacy x64.
+Current product: **v2.0.0-rc3** for FiveM GTA V Legacy x64.
 
 ## End users: use the built package
 
@@ -9,7 +9,7 @@ Current product: **v2.0.0-rc2** for FiveM GTA V Legacy x64.
 Use the latest successful GitHub Actions artifact named:
 
 ```text
-SecretEMKO-NeuralGraphics-v2.0.0-rc2
+SecretEMKO-NeuralGraphics-v2.0.0-rc3
 ```
 
 Extract it completely, close FiveM/GTA V, then run one of:
@@ -47,3 +47,8 @@ Current technical details:
 - `v2/MAIN-SYSTEM.json`
 
 The Windows CI validates PowerShell syntax, live ReShade catalogs, official ReShade installation, RenoDX compilation, source-ZIP rejection before FiveM modification, plugin isolation/restore, missing-plugin-folder creation, unsupported Full Neural rejection, release contents and artifact upload.
+
+
+### v2 RC3 backend orchestration
+
+In Full Neural mode, SECRET EMKO is the single intended settings surface. The verified RenoDX v4.70 consumer and DLSS 5 Bridge remain real backend dependencies, but SECRET EMKO controls their live/persisted state and uses ReShade's `DisabledAddons` policy to skip loading those backends on the next start when Neural Rendering is disabled. Runtime `FreeLibrary` unloading is intentionally not used.
