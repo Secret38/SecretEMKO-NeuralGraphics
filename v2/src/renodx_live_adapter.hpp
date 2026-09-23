@@ -192,6 +192,7 @@ class RenoDxLiveAdapter {
   bool valid_ = false;
   bool active_ = false;
   bool overlay_hidden_ = false;
+  bool apply_failed_ = false;
   bool have_baseline_ = false;
   uint64_t pending_generation_ = 0;
   uint64_t last_applied_generation_ = 0;
@@ -342,8 +343,16 @@ class RenoDxLiveAdapter {
 
       // Hidden/disabled provider controls must never be forced live. This keeps
       // SECRET EMKO aligned with RenoDX's own availability rules.
-      if (disabled_depth_ != 0)
+      if (disabled_depth_ != 0) {
+        if (f.pending) {
+          f.pending = false;
+          f.confirming = false;
+          f.confirmed = false;
+          apply_failed_ = true;
+          reason_ = std::string("RenoDX currently disables live control: ") + label;
+        }
         return false;
+      }
       f.min = lo;
       f.max = hi;
 
@@ -365,6 +374,7 @@ class RenoDxLiveAdapter {
       if (f.requested < lo || f.requested > hi) {
         f.pending = false;
         f.confirmed = false;
+        apply_failed_ = true;
         reason_ = std::string("Requested value is outside RenoDX range for ") + label;
         return false;
       }
@@ -471,6 +481,7 @@ class RenoDxLiveAdapter {
     table.EndDisabled = end_disabled;
 
     for (auto& f : fields_) f.seen = false;
+    apply_failed_ = false;
     disabled_stack_.clear();
     disabled_depth_ = 0;
 
@@ -524,11 +535,13 @@ class RenoDxLiveAdapter {
         f.confirming = false;
         f.confirmed = false;
         any_failed = true;
+        apply_failed_ = true;
       }
     }
 
-    if (any_failed) {
-      reason_ = "One or more RenoDX controls are unavailable in the current state";
+    if (any_failed || apply_failed_) {
+      if (reason_.empty() || reason_ == "Applying RenoDX live values")
+        reason_ = "One or more RenoDX controls are unavailable in the current state";
       return false;
     }
 
