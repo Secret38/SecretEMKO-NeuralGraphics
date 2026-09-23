@@ -739,7 +739,10 @@ try {
     Step "Checking/installing ReShade"
     # ReShade setup/update may rewrite ReShade.ini. Preserve the user-owned
     # SECRET EMKO/RenoDX/backend-policy keys, then merge them back afterward.
-    $persistentIniState = Get-SecretEmkoPersistentIniState $reshadeIni
+    $persistentIniState = [ordered]@{}
+    if ($managedExisting -and $priorState.install_mode -eq $installMode) {
+        $persistentIniState = Get-SecretEmkoPersistentIniState $reshadeIni
+    }
     Install-ReShadeHeadless $PluginsPath $neuralMode
     Restore-SecretEmkoPersistentIniState $reshadeIni $persistentIniState
 
@@ -908,6 +911,24 @@ try {
         & $reshadeContentTool -TargetDirectory $PluginsPath -Architecture 64 -SkipAddon -SkipCoreCheck
     }
     Ok "ReShade Main/Stream content updated"
+
+    # Final persistence barrier: later content/update stages must never reset
+    # the user's Neural tuning or next-start backend policy on an in-place
+    # update of the same mode.
+    Restore-SecretEmkoPersistentIniState $reshadeIni $persistentIniState
+    if ($neuralMode) {
+        Set-IniValue $reshadeIni "SecretEMKO" "InstallMode" "full-neural"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRToggleKey" "0"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRScreenshotKey" "0"
+        $backendState = Get-IniValue $reshadeIni "SecretEMKO" "BackendsNextStart"
+        if ($null -eq $backendState) {
+            $backendState = if ((Get-IniValue $reshadeIni "RenoDX.DLSS5" "NeuralUplift") -eq "0") { "0" } else { "1" }
+            Set-IniValue $reshadeIni "SecretEMKO" "BackendsNextStart" $backendState
+        }
+        Set-BackendDisabledPolicy $reshadeIni ($backendState -ne "0")
+    } else {
+        Set-IniValue $reshadeIni "SecretEMKO" "InstallMode" "rp-visual"
+    }
 
     foreach ($name in @("Secret_Emko_Main.ini","Secret_Emko_Stream.ini")) {
         if (-not $managed.Contains($name)) { [void]$managed.Add($name) }
