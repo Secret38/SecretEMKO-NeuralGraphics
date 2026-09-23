@@ -1,10 +1,10 @@
-# SECRET EMKO Neural Graphics v2 RC4
+# SECRET EMKO Neural Graphics v2 RC5
 
-RC4 is the hardened **FiveM GTA V Legacy x64** distribution. The key change is that "portable for RP players" is no longer treated as the same thing as "force the Full Add-on neural stack everywhere."
+RC5 is the hardened **FiveM GTA V Legacy x64** distribution. The key change is that "portable for RP players" is no longer treated as the same thing as "force the Full Add-on neural stack everywhere."
 
 ## Install
 
-> **Do not use GitHub `Code -> Download ZIP` for Full Neural.** The source archive does not contain the compiled `SecretEMKO.addon64` or packaged bridge. Download the successful GitHub Actions artifact `SecretEMKO-NeuralGraphics-v2.0.0-rc4`, extract it completely, and run the installer from that extracted package.
+> **Do not use GitHub `Code -> Download ZIP` for Full Neural.** The source archive does not contain the compiled `SecretEMKO.addon64` or packaged bridge. Download the successful GitHub Actions artifact `SecretEMKO-NeuralGraphics-v2.0.0-rc5`, extract it completely, and run the installer from that extracted package.
 
 For normal FiveM RP use, double-click:
 
@@ -22,7 +22,7 @@ INSTALL_SECRET_EMKO_FULL_NEURAL.bat
 
 That enables the Full Neural stack: ReShade Full Add-on Support, SECRET EMKO UI/add-on, RenoDX DLSS 5, DLSS 5 Bridge and the pinned NVIDIA neural runtimes.
 
-### RC4 control model
+### RC5 control model
 
 SECRET EMKO is the intended single control surface. The verified RenoDX v4.70 settings page is removed from the ReShade settings UI only after SECRET EMKO has successfully discovered and validated the live-control surface in the current session; if that proof fails, the original RenoDX page remains visible as a recovery fallback. DLSS 5 Bridge already has no separate ImGui settings page. The backend modules may still appear in ReShade's technical loaded-add-on inventory because they are genuinely loaded components.
 
@@ -30,9 +30,9 @@ Supported RenoDX controls are applied live through the exact v4.70 provider's ow
 
 Bridge controls are persisted to `dlss5-bridge.cfg`; upstream Bridge re-reads that file while the game is running, normally within about one second.
 
-### RC4 synthetic FiveM path
+### RC5 synthetic FiveM path
 
-FiveM GTA V Legacy does not expose a native DLSS contract. RC4 therefore pins the official upstream DLSS 5 Bridge `v1.4.13-pre8` build and uses its synthetic route. With `ofa_grid=1`, `2` or `4`, motion guidance comes from the bridge's internal NVIDIA Optical Flow path; a separate ReShade motion-vector shader is not required. `ofa_grid=0` remains the explicit external-provider mode.
+FiveM GTA V Legacy does not expose a native DLSS contract. RC5 therefore pins the official upstream DLSS 5 Bridge `v1.4.13-pre8` build and uses its synthetic route. With `ofa_grid=1`, `2` or `4`, motion guidance comes from the bridge's internal NVIDIA Optical Flow path; a separate ReShade motion-vector shader is not required. `ofa_grid=0` remains the explicit external-provider mode.
 
 The DLSS SR runtime remains managed in `FiveM.app\\plugins`. At Full Neural startup SECRET EMKO loads that exact `nvngx_dlss.dll` by full path and, only when the current host is FiveM's disposable `data\\cache\\subprocess` GTA process, creates an executable-local hardlink (copy fallback). This satisfies NGX's SuperSampling snippet lookup without asking users to edit dynamic cache folders manually.
 
@@ -42,11 +42,11 @@ Turning Neural Rendering off does not call `FreeLibrary` on third-party add-ons.
 
 ## FiveM path and existing plugins
 
-RC4 resolves standard and custom Legacy installs. It uses an explicit path when supplied, otherwise the standard LocalAppData install and discovered FiveM shortcuts; multiple discovered installations are resolved using the most recently modified `CitizenFX.ini`.
+RC5 resolves standard and custom Legacy installs. It uses an explicit path when supplied, otherwise the standard LocalAppData install and discovered FiveM shortcuts; multiple discovered installations are resolved using the most recently modified `CitizenFX.ini`.
 
-If no `plugins` directory exists, RC4 creates it.
+If no `plugins` directory exists, RC5 creates it.
 
-If an unrelated `plugins` directory already contains files, RC4 defaults to **Isolate**: it renames the entire old folder to `plugins.before-secret-emko.<timestamp>`, creates a clean active `plugins` folder, and carries forward only the old `reshade-shaders` library. DLL/ASI/add-on hooks are kept intact in the archived old folder rather than being blindly mixed into the new graphics chain.
+If an unrelated `plugins` directory already contains files, RC5 defaults to **Isolate**: it renames the entire old folder to `plugins.before-secret-emko.<timestamp>`, creates a clean active `plugins` folder, and carries forward only the old `reshade-shaders` library. DLL/ASI/add-on hooks are kept intact in the archived old folder rather than being blindly mixed into the new graphics chain.
 
 Failed first installs automatically attempt rollback. Uninstall snapshots the SECRET EMKO environment and restores the original plugins folder.
 
@@ -54,15 +54,15 @@ Failed first installs automatically attempt rollback. Uninstall snapshots the SE
 
 `Secret_Emko_Main.ini` is the default visual preset; `Secret_Emko_Stream.ini` is the lighter alternative. Public effects are resolved against ReShade's live official package catalog.
 
-User-owned shader libraries are carried forward. Proprietary packages such as QuantV are not fetched from unofficial mirrors. If an external effect is missing, RC4 removes that unavailable technique from the installed preset copy instead of leaving the default preset in an error state.
+User-owned shader libraries are carried forward. Proprietary packages such as QuantV are not fetched from unofficial mirrors. If an external effect is missing, RC5 removes that unavailable technique from the installed preset copy instead of leaving the default preset in an error state.
 
 ## Compatibility boundary
 
-FiveM documents that plugins can live in its application-data `plugins` directory and that servers may disallow them. ReShade also distinguishes the standard multiplayer-oriented build from Full Add-on Support. RC4 therefore uses the standard build for the default RP Visual path and requires explicit selection for Full Neural.
+FiveM documents that plugins can live in its application-data `plugins` directory and that servers may disallow them. ReShade also distinguishes the standard multiplayer-oriented build from Full Add-on Support. RC5 therefore uses the standard build for the default RP Visual path and requires explicit selection for Full Neural.
 
 DLSS 5 3D-Guided Neural Rendering is only treated as supported on GeForce RTX 50 Series hardware. Other GPUs use RP Visual.
 
-FiveM for GTAV Enhanced is not supported by this Legacy RC4 line.
+FiveM for GTAV Enhanced is not supported by this Legacy RC5 line.
 
 ## Persistence
 
@@ -79,3 +79,9 @@ RenoDX is built from current upstream main and its exact SHA is written to `BUIL
 Frame Generation remains gated until a real FiveM motion/depth/HUD-less-colour/swapchain/pacing integration is validated. The current RenoDX DLSS 5 path remains one real pass.
 
 See `COMPATIBILITY.md` for the detailed matrix and recovery behavior.
+
+## RC5 simple gaming UI
+
+Normal users should not have to understand RenoDX parameters, optical-flow grids or Streamline resource tags. RC5 therefore uses **Natural / Cinematic / Detail** as the three visible looks and a single realtime **Strength 0.00–2.00** control. Advanced exposes the lower-level provider/bridge pages for diagnostics only.
+
+The Frame Gen page is intentionally designed before the provider is unlocked: Off/2x/3x, automatic base FPS (or one manual base-FPS slider), HUD Protection, and automatic pause. It only unlocks when the dedicated native provider `SecretEMKO-FG.addon64` is both installed and loaded. The provider target is geometry-derived GTA motion, matching depth, HUD-less scene color, separate UI data, frame constants and present/pacing control. Optical Flow is not accepted as the production Frame Generation input route. See `FRAMEGEN-NATIVE.md`.
