@@ -82,6 +82,18 @@ class RenoDxLiveAdapter {
     have_baseline_ = true;
   }
 
+  void synchronize_all(const Desired& desired) {
+    set_baseline(desired);
+    const auto values = values_from(desired);
+    for (size_t i = 0; i < fields_.size(); ++i) {
+      fields_[i].requested = values[i];
+      fields_[i].pending = true;
+      fields_[i].confirming = false;
+      fields_[i].confirmed = false;
+    }
+    ++pending_generation_;
+  }
+
   void queue_diff(const Desired& desired) {
     const auto values = values_from(desired);
     if (!have_baseline_) {
