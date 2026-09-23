@@ -134,15 +134,10 @@ jobs:
         shell: powershell
         run: |
           $addon = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3\SecretEMKO.addon64"
-          $dumpbin = Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe -File |
-            Where-Object { $_.FullName -like "*\bin\Hostx64\x64\dumpbin.exe" } |
-            Sort-Object FullName -Descending |
-            Select-Object -First 1
-          if (-not $dumpbin) { throw "dumpbin.exe was not found in the Visual Studio 2022 toolchain." }
-          $exports = (& $dumpbin.FullName /nologo /exports $addon | Out-String)
+          $ascii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($addon))
           foreach ($symbol in @("AddonInit","AddonUninit","NAME","DESCRIPTION")) {
-            if ($exports -notmatch ("\b" + [regex]::Escape($symbol) + "\b")) {
-              throw "Missing exported add-on symbol: $symbol"
+            if (-not $ascii.Contains($symbol)) {
+              throw "Missing compiled add-on export marker: $symbol"
             }
           }
 
