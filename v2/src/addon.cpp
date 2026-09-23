@@ -210,7 +210,7 @@ void SetBackendLoadPolicy(bool load_next_start) {
   const bool loaded_now = NeuralBackendsLoaded();
   g_backend_transition_pending = load_next_start != loaded_now;
   if (!load_next_start && loaded_now)
-    g_backend_status = "Backends are idle now and scheduled not to load next start.";
+    g_backend_status = "Backends are scheduled not to load next start; current-session shutdown is being applied where verified.";
   else if (load_next_start && !loaded_now)
     g_backend_status = "Backends are scheduled to load on the next start.";
   else
@@ -238,7 +238,24 @@ secretemko_live::Desired ToLiveDesired(const NeuralSettings& value) {
 }
 
 bool AnyNeuralChange(const NeuralSettings& a, const NeuralSettings& b) {
-  return std::memcmp(&a, &b, sizeof(NeuralSettings)) != 0;
+  return a.enabled != b.enabled ||
+         a.enable_upscaling != b.enable_upscaling ||
+         a.preset != b.preset ||
+         a.style != b.style ||
+         std::fabs(a.intensity - b.intensity) > 0.0001f ||
+         std::fabs(a.global_tone - b.global_tone) > 0.0001f ||
+         std::fabs(a.local_tone - b.local_tone) > 0.0001f ||
+         std::fabs(a.local_structure - b.local_structure) > 0.0001f ||
+         std::fabs(a.skin_structure - b.skin_structure) > 0.0001f ||
+         a.auto_mask != b.auto_mask ||
+         a.ui_correction != b.ui_correction ||
+         std::fabs(a.diffuse_white_nits - b.diffuse_white_nits) > 0.01f ||
+         std::fabs(a.paper_white_scale - b.paper_white_scale) > 0.0001f ||
+         std::fabs(a.transfer_strength - b.transfer_strength) > 0.0001f ||
+         std::fabs(a.color_strength - b.color_strength) > 0.0001f ||
+         a.depth_mode != b.depth_mode ||
+         std::fabs(a.mv_scale_x - b.mv_scale_x) > 0.0001f ||
+         std::fabs(a.mv_scale_y - b.mv_scale_y) > 0.0001f;
 }
 
 bool ProviderRestartOnlyChange(const NeuralSettings& a, const NeuralSettings& b) {
@@ -343,7 +360,10 @@ void WriteNeuralSettings() {
   if (AnyNeuralChange(before, g_nr)) {
     if (NeuralBackendsLoaded() && g_live.available()) {
       g_live.queue_diff(ToLiveDesired(g_nr));
-    } else if (g_nr.enabled != 0) {
+    } else if (NeuralBackendsLoaded() || g_nr.enabled != 0) {
+      // Backends are present but cannot be controlled by the verified adapter,
+      // or they are absent and need to be loaded. Never claim an immediate
+      // runtime transition in either case.
       g_restart_required = true;
     }
 
@@ -439,6 +459,10 @@ void SetNeuralEnabled(bool enabled) {
     WriteNeuralSettings();
     WriteBridgeConfig(true);
     SetBackendLoadPolicy(false);
+    if (!g_live.available() && NeuralBackendsLoaded()) {
+      g_restart_required = true;
+      g_backend_status = "Backends will not load next start. RenoDX live shutdown is unavailable in this session, so restart is required for a guaranteed full stop.";
+    }
   }
 }
 
@@ -505,8 +529,8 @@ void DrawHeader() {
   ImGui::TextDisabled("NEURAL GRAPHICS");
   const bool neural_stack = NeuralStackInstalled();
   ImGui::TextDisabled(neural_stack
-      ? "FiveM GTA V Legacy  |  Full Neural mode  |  v2.0 RC2"
-      : "FiveM GTA V Legacy  |  Visual compatibility mode  |  v2.0 RC2");
+      ? "FiveM GTA V Legacy  |  Full Neural mode  |  v2.0 RC3"
+      : "FiveM GTA V Legacy  |  Visual compatibility mode  |  v2.0 RC3");
   const float readiness = static_cast<float>(CountReady()) / 6.0f;
   char overlay[64];
   sprintf_s(overlay, "Core stack %.0f%% ready", readiness * 100.0f);
@@ -648,7 +672,7 @@ void DrawNeural() {
 
   if (NeuralBackendsLoaded()) {
     if (g_live.available())
-      ImGui::TextDisabled("Live provider control: verified RenoDX v4.70, direct callback readback active.");
+      ImGui::TextDisabled("Live provider control: verified RenoDX v4.70, provider callback + readback active.");
     else
       ImGui::TextWrapped("Live provider control unavailable: %s. Values are still persisted, but unsupported changes require a restart.", g_live.reason().c_str());
   } else if (g_nr.enabled) {
@@ -901,8 +925,14 @@ void DrawOverlay(reshade::api::effect_runtime* runtime) {
   // RenoDX's own callback for an immediate readback confirmation.
   if (NeuralBackendsLoaded()) {
     const bool live_ok = g_live.tick(runtime);
-    if (g_live.has_pending() || (!live_ok && g_nr.enabled != 0))
+    if (g_live.has_pending() || g_live.has_confirming() || (!live_ok && g_nr.enabled != 0))
       g_restart_required = true;
+    else if (live_ok && g_live.last_apply_confirmed() && !ProviderRestartOnlyChange(g_saved_nr, g_nr)) {
+      // Runtime-supported values have been confirmed by RenoDX's own callback.
+      // Provider-only persisted fields may still independently require restart.
+      if (g_nr.enabled == 0 || NeuralBackendsLoaded())
+        g_restart_required = false;
+    }
   }
 }
 
