@@ -1045,9 +1045,8 @@ extern "C" __declspec(dllexport) void AddonUninit(HMODULE addon_module, HMODULE)
   reshade::unregister_addon(addon_module);
 }
 
-BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
-  if (reason == DLL_PROCESS_ATTACH) {
-    DisableThreadLibraryCalls(h_module);
-  }
+BOOL APIENTRY DllMain(HMODULE, DWORD, LPVOID) {
+  // Keep DllMain side-effect free. The adapter uses thread-local state, so
+  // thread notifications are deliberately left at the Windows default.
   return TRUE;
 }
