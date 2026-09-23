@@ -1,0 +1,350 @@
++  // How different a channel has to be before the interface is held responsible.
++  // Not zero: the scene copy and the presented image go through different
++  // numbers of format conversions, so identical pixels can differ in the last
++  // bit or two. Set at roughly one step of an 8-bit channel, which is below
++  // anything an interface element does and above anything rounding does.
++  float threshold = 1.0f / 255.0f;
++
++  // Antialiased text edges change the image by less than the body of the glyph
++  // does, so the mask ends a pixel short of the shape a reader sees. Growing it
++  // costs a ring of scene pixels left unprocessed around each element, which is
++  // invisible; not growing it costs a fringe of processed pixels around every
++  // letter, which is not.
++  std::uint32_t dilate_radius = 1;
++
++  // Keep a pixel marked for this many frames after it stops differing. A
++  // blinking indicator or a cursor would otherwise put the mask on and off at
++  // its own rate, and a mask that flickers makes the edge of every element
++  // shimmer.
++  std::uint32_t hold_frames = 3;
++
++  // Above this share of the screen the mask is not describing an interface, it
++  // is describing a full-screen menu, a loading screen or a fade. Protecting
++  // everything is the same as doing nothing, except that it does it while
++  // claiming to work.
++  float implausible_above = 0.75f;
++
++  // And below this there is effectively no interface on screen, which on a
++  // server with a permanent HUD means the comparison is not working rather than
++  // that the HUD is gone.
++  float implausible_below = 0.0001f;
++};
++
++struct MaskStats {
++  std::uint32_t covered = 0;
++  std::uint32_t total = 0;
++  float fraction = 0.0f;
++
++  // Whether this mask should be acted on at all. False is a normal state - a
++  // menu, a cutscene - and means the pipeline falls back to whatever it does
++  // without HUD protection.
++  bool plausible = false;
++  std::string reason;
++};
++
++// One pixel, in the same arithmetic the compute shader uses. The shader is a
++// transcription of this; this is the definition and the thing under test.
++bool Touched(const Rgb& hudless, const Rgb& shown, float threshold);
++
++// Builds the coverage mask for a whole image.
++//
++// `previous_hold` carries the per-pixel hold counters between frames and is
++// updated in place. Pass an empty vector on the first frame; it is sized here.
++// `out_mask` is 0 or 255 per pixel, sized here.
++MaskStats BuildOverlayMask(const std::vector<Rgb>& hudless,
++                           const std::vector<Rgb>& shown, std::uint32_t width,
++                           std::uint32_t height, const MaskPolicy& policy,
++                           std::vector<std::uint8_t>& previous_hold,
++                           std::vector<std::uint8_t>& out_mask);
++
++// Compositing the finished pipeline output back under the interface.
++//
++//   masked   -> the presented pixel, interface and all, untouched
++//   unmasked -> whatever the pipeline produced
++//
++// Nothing is blended between the two. A partial weight on this decision would
++// mean a partly-processed letter, and a partly-processed letter is a fringe -
++// which is the artifact this entire mechanism exists to prevent.
++Rgb Composite(const Rgb& processed, const Rgb& shown, std::uint8_t mask);
++
++}  // namespace emko::core::frame
++
++#endif  // SECRETEMKO_CORE_FRAME_OVERLAY_MASK_HPP
+diff --git a/v3/src/core/frame/segmentation.cpp b/v3/src/core/frame/segmentation.cpp
+new file mode 100644
+index 0000000..ab7835b
+--- /dev/null
++++ b/v3/src/core/frame/segmentation.cpp
+@@ -0,0 +1,204 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/frame/segmentation.cpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "core/frame/segmentation.hpp"
++
++#include <algorithm>
++
++namespace emko::core::frame {
++
++const char* ToString(LockState state) {
++  switch (state) {
++    case LockState::Searching: return "searching";
++    case LockState::Settling: return "settling";
++    case LockState::Locked: return "locked";
++    case LockState::Lost: return "lost";
++  }
++  return "searching";
++}
++
++bool FrameShape::plausible() const {
++  // There has to be a world, and there has to be an interface run that actually
++  // closes the frame. A run in the middle is something that looked like
++  // interface and was not - a blended composite, most likely - and cutting
++  // there would throw away the rest of the world.
++  if (!found_scene) return false;
++  if (overlay_run_length == 0) return false;
++  if (!overlay_run_reaches_end) return false;
++
++  // The interface cannot start before the world has finished. If it appears to,
++  // the classification is wrong rather than the renderer being strange.
++  return overlay_run_start > last_scene_draw;
++}
++
++FrameShape ShapeOf(const std::vector<DrawObservation>& draws) {
++  FrameShape shape;
++  shape.draw_count = static_cast<std::uint32_t>(draws.size());
++  if (draws.empty()) return shape;
++
++  // Pass one: the last draw that is definitely world or image work.
++  //
++  // Only confident verdicts count. A weak prior is exactly the case this cannot
++  // afford to be decided by - a blended full-screen quad is either a bloom
++  // composite or the interface, and treating a guess as the boundary is the
++  // failure this whole design is arranged around.
++  for (std::size_t i = 0; i < draws.size(); ++i) {
++    const PhasePrior prior = ClassifyDraw(draws[i]);
++    if ((prior.phase == Phase::Scene || prior.phase == Phase::PostProcess) &&
++        prior.strong()) {
++      shape.last_scene_draw = draws[i].draw_index;
++      shape.found_scene = true;
++    }
++    if (prior.phase == Phase::Unknown) ++shape.unknown_draws;
++  }
++
++  if (!shape.found_scene) return shape;
++
++  // Pass two: walk backwards from the end for as long as nothing is world or
++  // image work. That run is the interface, whatever it is made of - and it is
++  // found without recognising a single interface element, which is the point.
++  // A browser-rendered layer on an RP server is in it for the same reason the
++  // game's own health bar is: it is after the world and it is not the world.
++  std::size_t run_start = draws.size();
++  for (std::size_t i = draws.size(); i-- > 0;) {
++    const PhasePrior prior = ClassifyDraw(draws[i]);
++    const bool is_world = (prior.phase == Phase::Scene ||
++                           prior.phase == Phase::PostProcess) && prior.strong();
++    if (is_world) break;
++    run_start = i;
++  }
++
++  if (run_start >= draws.size()) {
++    // Nothing after the last confident world draw. The frame ends in world
++    // work, so either there is no interface this frame or it was drawn in a way
++    // this cannot see. Both are reported as "no run", never as "cut at the end".
++    return shape;
++  }
++
++  shape.overlay_run_start = draws[run_start].draw_index;
++  shape.overlay_run_length = static_cast<std::uint32_t>(draws.size() - run_start);
++  shape.overlay_run_reaches_end = true;
++  return shape;
++}
++
++void FrameSegmenter::reset() {
++  state_ = LockState::Searching;
++  candidate_ = 0;
++  agreeing_ = 0;
++  disagreeing_ = 0;
++  locked_at_ = 0;
++  reason_ = "reset";
++}
++
++void FrameSegmenter::invalidate(const char* why) {
++  if (state_ == LockState::Locked) ++stats_.losses;
++  state_ = LockState::Lost;
++  agreeing_ = 0;
++  disagreeing_ = 0;
++  reason_ = why ? why : "invalidated";
++}
++
++void FrameSegmenter::observe(const FrameShape& shape) {
++  ++stats_.frames_seen;
++
++  // A frame with almost nothing in it is a loading screen, a pause, or a device
++  // that has just come back. It carries no information about where the
++  // interface starts, and admitting one as evidence is how the boundary ends up
++  // at zero and stays there.
++  if (shape.draw_count < config_.minimum_draws) {
++    ++stats_.frames_ignored;
++    return;
++  }
++
++  if (!shape.plausible()) {
++    ++disagreeing_;
++    if (state_ == LockState::Locked && disagreeing_ >= config_.frames_before_unlock) {
++      ++stats_.losses;
++      state_ = LockState::Lost;
++      agreeing_ = 0;
++      reason_ = "the frame stopped having a recognisable interface run";
++    } else if (state_ != LockState::Locked) {
++      agreeing_ = 0;
++      // Losing the candidate is not the same as losing a lock. Only a lock that
++      // is dropped is a loss worth reporting to the player.
++      if (state_ != LockState::Lost) state_ = LockState::Searching;
++      reason_ = "no usable boundary in this frame";
++    }
++    return;
++  }
++
++  const std::uint32_t boundary = shape.overlay_run_start;
++  const std::uint32_t reference = agreeing_ > 0 ? candidate_ : boundary;
++  const std::uint32_t distance = boundary > reference ? boundary - reference
++                                                      : reference - boundary;
++
++  // The draw count moves every frame - more cars, more people, more particles -
++  // so an exact index would never agree with itself. What has to hold still is
++  // the shape of the frame, not the number.
++  if (distance > config_.tolerance_draws) {
++    disagreeing_ = 0;
++    agreeing_ = 1;
++    candidate_ = boundary;
++    if (state_ == LockState::Locked) {
++      // A lock that is contradicted by a perfectly plausible frame somewhere
++      // else is a lock on the wrong thing. Drop it rather than averaging the
++      // two, which would land between them and be wrong in both.
++      ++stats_.losses;
++      state_ = LockState::Lost;
++      reason_ = "the boundary moved further than a frame's variation explains";
++      return;
++    }
++    state_ = LockState::Settling;
++    reason_ = "a new candidate boundary";
++    return;
++  }
++
++  disagreeing_ = 0;
++  ++agreeing_;
++
++  // Track the most recent agreeing boundary rather than the first. Over a long
++  // lock the frame drifts, and following it keeps the cut where the interface
++  // actually starts instead of where it started a minute ago.
++  candidate_ = boundary;
++
++  if (state_ == LockState::Locked) {
++    locked_at_ = boundary;
++    reason_ = "the interface run has been in the same place for a while";
++    return;
++  }
++
++  if (agreeing_ >= config_.frames_before_lock) {
++    state_ = LockState::Locked;
++    locked_at_ = boundary;
++    ++stats_.locks;
++    reason_ = "the interface run has been in the same place for a while";
++    return;
++  }
++
++  state_ = LockState::Settling;
++  reason_ = "waiting for the boundary to hold still";
++}
++
++CapturePoint FrameSegmenter::capture_point() const {
++  CapturePoint point;
++  point.state = state_;
++  point.agreeing_frames = agreeing_;
++  point.reason = reason_;
++
++  if (state_ != LockState::Locked) {
++    // Not usable is not a failure state, it is the honest one. Everything
++    // downstream falls back to what it does without a HUD-less copy, which is
++    // the behaviour that shipped before any of this existed.
++    point.usable = false;
++    return point;
++  }
++
++  point.usable = true;
++  point.draw_index = locked_at_ > 0 ? locked_at_ - 1 : 0;
++  return point;
++}
++
++}  // namespace emko::core::frame
+diff --git a/v3/src/core/frame/segmentation.hpp b/v3/src/core/frame/segmentation.hpp
+new file mode 100644
+index 0000000..ded8ed9
+--- /dev/null
++++ b/v3/src/core/frame/segmentation.hpp
+@@ -0,0 +1,165 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/frame/segmentation.hpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ *
++ * Where the world stops and the interface begins.
++ *
++ * THE ONE NUMBER THIS PRODUCES
++ *
++ * The capture point: the draw index after which the frame contains a finished
++ * world and no interface yet. Copy the image there and you have HUD-less
++ * colour, which is what the neural pass should be reading and what frame
++ * generation should be interpolating. Everything drawn afterwards is composited
++ * back on top, untouched, at full sharpness, never generated.
++ *
++ * HOW IT IS FOUND
++ *
++ * Interface is drawn last. Not "usually last" - last, because compositing order
++ * is what makes it visible, and a renderer that drew the HUD before the world
++ * would be drawing a HUD nobody can see. So the frame ends in a run of overlay
++ * draws, and the capture point is where that run begins.
++ *
++ * That gives a rule which does not depend on recognising any particular
++ * interface: find the last draw that is definitely world or image work, and cut
++ * after it. Text, icons, bars, markers, and a browser-rendered layer the game
++ * does not own all land on the far side of that cut without being individually
++ * identified. On a server with a large custom interface, that is the difference
++ * between a rule that works and a list that has to be maintained.
++ *
++ * WHY IT IS NOT ACTED ON IMMEDIATELY
++ *
++ * Because being wrong here is expensive in both directions. Cut too early and
++ * the world's last effects are treated as interface, which freezes part of the
++ * picture. Cut too late and text gets smeared by the pass that was supposed to
++ * improve it. Neither is subtle, and both are the kind of thing a player
++ * reports as "it looks broken" rather than as a setting.
++ *
++ * So the boundary has to hold still before it is used, and the moment the frame
++ * stops looking like the frame it was, the lock is dropped rather than
++ * stretched. A menu opening, a resolution change, a cutscene - all of them move
++ * the boundary legitimately, and all of them are better handled by admitting we
++ * no longer know than by carrying on with a stale answer.
++ */
++
++#ifndef SECRETEMKO_CORE_FRAME_SEGMENTATION_HPP
++#define SECRETEMKO_CORE_FRAME_SEGMENTATION_HPP
++
++#include <cstdint>
++#include <string>
++#include <vector>
++
++#include "core/frame/draw.hpp"
++
++namespace emko::core::frame {
++
++// What one frame looked like, once every draw in it has been classified.
++struct FrameShape {
++  std::uint32_t draw_count = 0;
++
++  // The last draw that was definitely world or image work. The capture point
++  // sits immediately after it.
++  std::uint32_t last_scene_draw = 0;
