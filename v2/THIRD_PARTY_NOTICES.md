@@ -30,3 +30,11 @@ DLSS, DLSS Neural Rendering, DLSS Frame Generation, NGX and Streamline are NVIDI
 
 ## No PureDark code
 SECRET EMKO v2 contains no PureDark proprietary source, authentication bypass, Patreon bypass, license bypass or paid-mod assets.
+
+
+## DLSS5-Swapper live-control adapter provenance
+The RC3 RenoDX live-control adapter is derived from the MIT-licensed, hash-pinned RenoDX v4.7 UI bridge in `rakanki911/DLSS5-Swapper` (commit `24bd2aca7a7451ce94e564366381e33cac9dcdba`).  
+Copyright (c) 2026 Rakan Alkhaldi  
+License: MIT.
+
+SECRET EMKO uses that technique only for the exact verified `renodx-dlss5.addon64` v4.70 binary (SHA-256 `D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C8593952`) and additionally checks code fingerprints before enabling live control. Unknown or changed RenoDX builds are refused rather than patched heuristically. The adapter calls RenoDX's own settings callback synchronously and confirms supported values by readback; it does not retain private setting pointers or patch the RenoDX file on disk.
