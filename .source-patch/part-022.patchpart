@@ -1,0 +1,350 @@
++  void record(std::uint64_t frame, std::uint32_t vertices, bool blended,
++              bool depth_tested, bool depth_written, bool multi_target);
++
++  [[nodiscard]] double presence(std::uint64_t frames_observed) const;
++  [[nodiscard]] bool seen_recently(std::uint64_t now, std::uint64_t within) const;
++};
++
++// The structural tier: what behaviour alone supports.
++enum class Structure : std::uint8_t {
++  Unknown = 0,
++  World,        // ubiquitous, depth-writing, G-buffer filling
++  Subject,      // opaque, intermittent - a person, a car, a held object
++  Transparent,  // alpha-blended and depth-tested, after the opaque pass
++  Interface,    // no depth at all
++};
++
++const char* ToString(Structure structure);
++
++struct StructureVerdict {
++  Structure structure = Structure::Unknown;
++  float confidence = 0.0f;
++  const char* because = "not enough frames yet";
++
++  [[nodiscard]] bool settled() const { return confidence >= 0.8f; }
++};
++
++// Pure. `frames_observed` is how many frames the whole session has seen, which
++// is what "appears in essentially every frame" is measured against.
++StructureVerdict ClassifyStructure(const ShaderStats& stats,
++                                   std::uint64_t frames_observed);
++
++// Where a semantic assignment came from. The distinction is load-bearing: a
++// shipped or calibrated entry is knowledge, a derived one is an inference, and
++// they are allowed to do different things.
++enum class AssignmentSource : std::uint8_t {
++  None = 0,
++  Derived,     // from the structural tier, and only where that is sufficient
++  Calibrated,  // this player told us, once
++  Shipped,     // gathered against this exact game build and distributed
++};
++
++const char* ToString(AssignmentSource source);
++
++struct Assignment {
++  Material material = Material::Environment;
++  AssignmentSource source = AssignmentSource::None;
++  std::string because;
++
++  [[nodiscard]] bool known() const { return source != AssignmentSource::None; }
++};
++
++struct CatalogueConfig {
++  // Frames before the structural tier is willing to say anything. A shader seen
++  // twice has no presence statistic worth the name.
++  std::uint64_t frames_before_deciding = 240;
++
++  // A shader appearing in at least this share of frames is part of the world.
++  double world_presence = 0.9;
++
++  // ...and one appearing in at most this share is intermittent enough to be a
++  // subject. The gap between the two is deliberate: shaders that fall in it are
++  // left Unknown rather than pushed to whichever side is closer.
++  double subject_presence = 0.6;
++
++  // Frames between re-derivations. The presence statistic moves slowly by
++  // construction - it is a ratio over the whole session - so re-deriving every
++  // frame means walking a few thousand shaders on the present thread, at frame
++  // rate, to reach the same answer. Once a second is more often than the input
++  // can change.
++  std::uint64_t frames_between_derivations = 60;
++};
++
++// Everything known about this build's shaders, and what it adds up to.
++class MaterialCatalogue {
++ public:
++  MaterialCatalogue() = default;
++  explicit MaterialCatalogue(CatalogueConfig config) : config_(config) {}
++
++  // The identity of the game build these observations came from. A catalogue
++  // gathered against one build and applied to another is a table applied to
++  // different shaders with the same names, so entries are refused across a
++  // change rather than migrated.
++  void set_build(std::string identity);
++  [[nodiscard]] const std::string& build() const { return build_; }
++
++  void observe(std::uint64_t shader, std::uint64_t frame, std::uint32_t vertices,
++               bool blended, bool depth_tested, bool depth_written,
++               bool multi_target);
++  void end_frame(std::uint64_t frame);
++
++  // A player's answer, or a shipped table's entry. Both are knowledge rather
++  // than inference, which is why neither can be overwritten by the structural
++  // tier.
++  bool assign(std::uint64_t shader, Material material, AssignmentSource source,
++              const std::string& build);
++
++  [[nodiscard]] Assignment lookup(std::uint64_t shader) const;
++
++  // Which classes can actually be identified right now. This is what
++  // core/semantic.hpp takes: a class with no shader behind it is not a class,
++  // and its pixels are treated as world.
++  [[nodiscard]] MaterialAvailability availability() const;
++
++  // Shaders that matter and have no assignment, most-drawn first. This is what
++  // a calibration screen would ask about, in the order worth asking.
++  struct Unassigned {
++    std::uint64_t shader = 0;
++    Structure structure = Structure::Unknown;
++    std::uint64_t draws = 0;
++    double presence = 0.0;
++  };
++  [[nodiscard]] std::vector<Unassigned> needs_calibration(std::size_t limit = 16) const;
++
++  [[nodiscard]] std::size_t size() const { return shaders_.size(); }
++  [[nodiscard]] std::uint64_t frames_observed() const { return frames_observed_; }
++  [[nodiscard]] const ShaderStats* stats(std::uint64_t shader) const;
++
++ private:
++  struct Entry {
++    ShaderStats stats;
++    Assignment assignment;
++  };
++
++  CatalogueConfig config_;
++  std::string build_;
++  std::unordered_map<std::uint64_t, Entry> shaders_;
++  std::uint64_t frames_observed_ = 0;
++  std::uint64_t last_frame_ = 0;
++};
++
++}  // namespace emko::core::frame
++
++#endif  // SECRETEMKO_CORE_FRAME_MATERIALS_HPP
+diff --git a/v3/src/core/frame/overlay_mask.cpp b/v3/src/core/frame/overlay_mask.cpp
+new file mode 100644
+index 0000000..2b30a97
+--- /dev/null
++++ b/v3/src/core/frame/overlay_mask.cpp
+@@ -0,0 +1,139 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/frame/overlay_mask.cpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "core/frame/overlay_mask.hpp"
++
++#include <algorithm>
++#include <cmath>
++
++namespace emko::core::frame {
++namespace {
++
++constexpr std::uint8_t kSet = 255;
++constexpr std::uint8_t kClear = 0;
++
++}  // namespace
++
++bool Touched(const Rgb& hudless, const Rgb& shown, float threshold) {
++  // Per-channel rather than on the luminance. An interface element can be a
++  // pure colour shift at the same brightness - a red damage tint, a blue
++  // selection highlight - and a luminance test would miss exactly those.
++  return std::fabs(shown.r - hudless.r) > threshold ||
++         std::fabs(shown.g - hudless.g) > threshold ||
++         std::fabs(shown.b - hudless.b) > threshold;
++}
++
++MaskStats BuildOverlayMask(const std::vector<Rgb>& hudless,
++                           const std::vector<Rgb>& shown, std::uint32_t width,
++                           std::uint32_t height, const MaskPolicy& policy,
++                           std::vector<std::uint8_t>& previous_hold,
++                           std::vector<std::uint8_t>& out_mask) {
++  MaskStats stats;
++  const std::size_t pixels = static_cast<std::size_t>(width) * height;
++  stats.total = static_cast<std::uint32_t>(pixels);
++
++  if (pixels == 0 || hudless.size() < pixels || shown.size() < pixels) {
++    // Two images of different sizes is not a mask that covers nothing, it is a
++    // question that was not asked properly. Reporting it as empty would look
++    // like "no interface on screen", which is a completely different situation.
++    stats.reason = "the two images are not the same size";
++    out_mask.assign(pixels, kClear);
++    return stats;
++  }
++
++  if (previous_hold.size() != pixels) previous_hold.assign(pixels, 0);
++
++  // Pass one: raw difference, and the hold that carries a pixel forward after
++  // it stops differing.
++  std::vector<std::uint8_t> raw(pixels, kClear);
++  for (std::size_t i = 0; i < pixels; ++i) {
++    if (Touched(hudless[i], shown[i], policy.threshold)) {
++      raw[i] = kSet;
++      previous_hold[i] = static_cast<std::uint8_t>(
++          std::min<std::uint32_t>(policy.hold_frames, 255));
++    } else if (previous_hold[i] > 0) {
++      --previous_hold[i];
++      raw[i] = kSet;
++    }
++  }
++
++  // Pass two: grow by the dilation radius, separably. A square rather than a
++  // disc: the difference at radius one or two is a single pixel at the
++  // diagonals, and the square is two linear passes instead of a neighbourhood
++  // loop, which is what this has to be on the GPU.
++  out_mask.assign(pixels, kClear);
++  if (policy.dilate_radius == 0) {
++    out_mask = raw;
++  } else {
++    const int radius = static_cast<int>(policy.dilate_radius);
++    std::vector<std::uint8_t> horizontal(pixels, kClear);
++
++    for (std::uint32_t y = 0; y < height; ++y) {
++      const std::size_t row = static_cast<std::size_t>(y) * width;
++      for (std::uint32_t x = 0; x < width; ++x) {
++        std::uint8_t value = kClear;
++        const int from = std::max(0, static_cast<int>(x) - radius);
++        const int to = std::min(static_cast<int>(width) - 1,
++                                static_cast<int>(x) + radius);
++        for (int sx = from; sx <= to; ++sx) {
++          if (raw[row + static_cast<std::size_t>(sx)] != kClear) {
++            value = kSet;
++            break;
++          }
++        }
++        horizontal[row + x] = value;
++      }
++    }
++
++    for (std::uint32_t y = 0; y < height; ++y) {
++      const int from = std::max(0, static_cast<int>(y) - radius);
++      const int to = std::min(static_cast<int>(height) - 1,
++                              static_cast<int>(y) + radius);
++      for (std::uint32_t x = 0; x < width; ++x) {
++        std::uint8_t value = kClear;
++        for (int sy = from; sy <= to; ++sy) {
++          if (horizontal[static_cast<std::size_t>(sy) * width + x] != kClear) {
++            value = kSet;
++            break;
++          }
++        }
++        out_mask[static_cast<std::size_t>(y) * width + x] = value;
++      }
++    }
++  }
++
++  for (std::size_t i = 0; i < pixels; ++i) {
++    if (out_mask[i] != kClear) ++stats.covered;
++  }
++  stats.fraction = static_cast<float>(stats.covered) / static_cast<float>(pixels);
++
++  if (stats.fraction > policy.implausible_above) {
++    // A mask this large is not an interface, it is a menu, a fade or a loading
++    // screen. Protecting everything is the same as doing nothing, except that
++    // it does it while claiming to work.
++    stats.reason = "almost the whole screen changed, so this is a menu or a "
++                   "fade rather than an interface";
++    return stats;
++  }
++  if (stats.fraction < policy.implausible_below) {
++    // On a server with a permanent HUD, nothing changing means the comparison
++    // is not working - most likely the scene copy is stale - rather than that
++    // the interface has gone away.
++    stats.reason = "nothing changed between the two images, so the comparison "
++                   "is not working";
++    return stats;
++  }
++
++  stats.plausible = true;
++  stats.reason = "the interface covers a believable share of the screen";
++  return stats;
++}
++
++Rgb Composite(const Rgb& processed, const Rgb& shown, std::uint8_t mask) {
++  return mask != kClear ? shown : processed;
++}
++
++}  // namespace emko::core::frame
+diff --git a/v3/src/core/frame/overlay_mask.hpp b/v3/src/core/frame/overlay_mask.hpp
+new file mode 100644
+index 0000000..f5316df
+--- /dev/null
++++ b/v3/src/core/frame/overlay_mask.hpp
+@@ -0,0 +1,138 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/frame/overlay_mask.hpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ *
++ * Which pixels the interface covers.
++ *
++ * WHY NOT JUST CAPTURE THE INTERFACE
++ *
++ * The obvious plan is to give the interface its own render target, let it draw
++ * into transparent black, and composite it back ourselves. It is also a plan
++ * that quietly rewrites how the game blends.
++ *
++ * Interface elements do not all composite the same way. Some are straight
++ * source-over, some blend against what is behind them, some write alpha and
++ * some do not. Redirect them into a cleared target and every one of those that
++ * was relying on the scene being there gets a different answer - and the ones
++ * that do not write alpha come out with no alpha at all, so they cannot be put
++ * back. The result is an interface that looks almost right, which is the worst
++ * available outcome because nobody can say what changed.
++ *
++ * WHAT IS ACTUALLY NEEDED
++ *
++ * Not the interface as an image. Only which pixels it covers - because what the
++ * pipeline has to do is leave those pixels alone:
++ *
++ *   The neural pass should not sharpen text.
++ *   Generated frames should not interpolate a health bar between two positions.
++ *   A moving map should not be smeared by motion vectors describing the world.
++ *
++ * And the coverage is recoverable exactly, from two images we already have. The
++ * scene was copied before the interface was drawn; the presented frame has the
++ * interface in it. Wherever those differ, the interface touched that pixel.
++ *
++ * No render target is rebound, no blend state is changed, nothing about how the
++ * game draws is altered. The comparison happens afterwards, on two textures, and
++ * the worst a bug here can do is mask too much or too little - never produce an
++ * interface that renders differently.
++ *
++ * WHAT THIS CANNOT DO, STATED PLAINLY
++ *
++ * Under a semi-transparent element the presented image contains the *original*
++ * scene showing through, not the processed one. Keeping the presented pixel
++ * there means that background is unprocessed. It is a real difference and it is
++ * not recoverable from one equation per channel with two unknowns - so it is not
++ * papered over, it is simply what happens behind a translucent panel, where it
++ * is invisible in practice. Opaque interface, which is nearly all of it, is
++ * exact.
++ */
++
++#ifndef SECRETEMKO_CORE_FRAME_OVERLAY_MASK_HPP
++#define SECRETEMKO_CORE_FRAME_OVERLAY_MASK_HPP
++
++#include <cstdint>
++#include <string>
++#include <vector>
++
++namespace emko::core::frame {
++
++struct Rgb {
++  float r = 0.0f;
++  float g = 0.0f;
++  float b = 0.0f;
++};
++
++struct MaskPolicy {
