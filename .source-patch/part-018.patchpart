@@ -1,0 +1,378 @@
++  // having captured it - which is why it is its own node rather than a flag on
++  // the one below.
++  FrameSegmentation,
++  HudlessColor,
++  UiLayer,
++  FrameConstants,
++  PresentControl,
++  // Motion reconstructed from depth and the camera matrices. Exact for the
++  // static world, blind to anything that moves on its own - so it is a separate
++  // node from geometry motion, never a weaker grade of it.
++  CameraMotion,
++  StreamlineRuntime,
++
++  // Rolled-up product features. These are what the header badges show.
++  NeuralRendering,
++  FrameGeneration,
++
++  Count,
++};
++
++inline constexpr std::size_t kCapCount = static_cast<std::size_t>(CapId::Count);
++
++// How a dependency constrains its dependent.
++//   Required : dependent is clamped to the dependency's state; Blocked inherits.
++//   Optional : contributes nothing to the clamp; used for enrichment only.
++//   AnyOf    : members of the same non-zero group are OR'ed. The group as a
++//              whole clamps by its *best* member. This is how Neural Rendering
++//              accepts either optical-flow motion or GTA shader motion without
++//              hard-coding that choice into the resolver.
++enum class DepKind : std::uint8_t { Required = 0, Optional = 1, AnyOf = 2 };
++
++// Every edge also declares how far its dependency has to climb before it stops
++// holding the dependent back.
++//
++// This matters because the nodes are not all the same kind of thing. A passive
++// runtime file is fully doing its job the moment it exists on disk - it will
++// never be "loaded" by us and will never report frames, so demanding liveness
++// from it would permanently cap everything above it. An active pipeline stage,
++// by contrast, is only satisfying while it is genuinely running.
++//
++// Modelling both with one rule was the first thing the tests caught here.
++struct Dependency {
++  CapId id = CapId::Count;
++  DepKind kind = DepKind::Required;
++  std::uint8_t group = 0;  // only meaningful for AnyOf
++  Lifecycle satisfies_from = Lifecycle::Ready;
++};
++
++struct CapabilityDef {
++  CapId id = CapId::Count;
++  std::string_view key;      // stable machine id, e.g. "provider.renodx"
++  std::string_view display;  // short label for the Status page
++  std::string_view purpose;  // one line, plain language
++  bool user_visible = true;  // hidden nodes still resolve, they just do not list
++  std::vector<Dependency> deps;
++};
++
++// The definition table for the whole product.
++const std::array<CapabilityDef, kCapCount>& CapabilityDefs();
++const CapabilityDef& DefOf(CapId id);
++
++// Resolved state of one node.
++struct CapabilityState {
++  Lifecycle state = Lifecycle::Absent;
++  Confidence confidence = Confidence::Weak;
++  BlockerCode blocker = BlockerCode::None;
++  std::string reason;      // why it is at this rung, in plain language
++  Lifecycle evidence_ceiling = Lifecycle::Absent;  // before dependency clamping
++  CapId clamped_by = CapId::Count;                 // which dependency held it back
++};
++
++// The live graph: definitions plus one evidence ledger per node.
++class CapabilityGraph {
++ public:
++  CapabilityGraph();
++
++  EvidenceLedger& ledger(CapId id) { return ledgers_[static_cast<std::size_t>(id)]; }
++  [[nodiscard]] const EvidenceLedger& ledger(CapId id) const {
++    return ledgers_[static_cast<std::size_t>(id)];
++  }
++
++  void observe(CapId id, const Evidence& e) { ledger(id).add(e); }
++  void retract(CapId id, EvidenceKind kind) { ledger(id).retract(kind); }
++  void reset();
++
++  // Resolve every node. Dependencies are resolved before dependents; the table
++  // is declared in topological order and that invariant is asserted in tests.
++  [[nodiscard]] std::array<CapabilityState, kCapCount> resolve(Timestamp now) const;
++
++ private:
++  std::array<EvidenceLedger, kCapCount> ledgers_{};
++};
++
++// Convenience accessors over a resolved snapshot.
++struct Snapshot {
++  Timestamp now = 0;
++  std::array<CapabilityState, kCapCount> states{};
++
++  [[nodiscard]] const CapabilityState& operator[](CapId id) const {
++    return states[static_cast<std::size_t>(id)];
++  }
++  [[nodiscard]] Lifecycle state(CapId id) const { return (*this)[id].state; }
++  [[nodiscard]] bool at_least(CapId id, Lifecycle rung) const {
++    const Lifecycle s = state(id);
++    return s != Lifecycle::Blocked && s >= rung;
++  }
++  [[nodiscard]] bool blocked(CapId id) const {
++    return state(id) == Lifecycle::Blocked;
++  }
++};
++
++Snapshot MakeSnapshot(const CapabilityGraph& graph, Timestamp now);
++
++}  // namespace emko::core
++
++#endif  // SECRETEMKO_CORE_CAPABILITY_HPP
+diff --git a/v3/src/core/evidence.hpp b/v3/src/core/evidence.hpp
+new file mode 100644
+index 0000000..c804f34
+--- /dev/null
++++ b/v3/src/core/evidence.hpp
+@@ -0,0 +1,167 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/evidence.hpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ *
++ * The evidence ledger.
++ *
++ * v2 answered "is neural rendering active?" by grepping a third-party log file
++ * for a success string. Once that string existed it existed forever, so the UI
++ * could report ACTIVE long after the pipeline had stopped delivering anything.
++ *
++ * v3 inverts the model. Nothing is a state; everything is an observation with a
++ * source, a trust level and an expiry. A capability is only as alive as its
++ * freshest surviving observation. If the proof stops arriving, the claim decays
++ * on its own - no code has to remember to retract it.
++ */
++
++#ifndef SECRETEMKO_CORE_EVIDENCE_HPP
++#define SECRETEMKO_CORE_EVIDENCE_HPP
++
++#include <cstdint>
++#include <string>
++#include <vector>
++
++#include "core/time.hpp"
++
++namespace emko::core {
++
++// What an observation is able to prove. Ordered: a later kind implies that
++// everything before it must also hold, which is what lets the resolver simply
++// take the maximum over fresh evidence.
++enum class EvidenceKind : std::uint8_t {
++  FilePresent = 0,        // the artifact exists on disk (and matched its pin)
++  ModuleLoaded = 1,       // the module is mapped into this process
++  ContractNegotiated = 2, // exports resolved / ABI matched / live control proven
++  Configured = 3,         // the desired configuration was written AND read back
++  Liveness = 4,           // frames were observed moving through this path
++  Blocker = 5,            // a hard negative; outranks everything above
++};
++
++// How much the observation is worth. This is not decoration: the resolver
++// refuses to promote a capability to Active on Weak evidence alone, which is
++// exactly the v2 bug (a scraped log line was treated as ground truth).
++enum class Confidence : std::uint8_t {
++  Weak = 0,    // parsed from a third-party artifact we do not control
++  Normal = 1,  // an operating-system or filesystem query
++  Strong = 2,  // a first-party counter, callback readback or negotiated ABI
++};
++
++// Stable machine-readable blocker identities. The UI maps these to text; logs
++// and bug reports carry the number, so a user report stays diagnosable.
++enum class BlockerCode : std::uint32_t {
++  None = 0,
++  MissingFile = 1,
++  HashMismatch = 2,
++  ModuleLoadFailed = 3,
++  ExportMissing = 4,
++  AbiMismatch = 5,
++  ContractRefused = 6,      // provider declined to create its feature
++  InputsMissing = 7,        // required render inputs never showed up
++  DeviceLost = 8,
++  UnsupportedHardware = 9,
++  ConflictingOwner = 10,    // another component owns the same resource
++  DependencyBlocked = 11,   // inherited from a required dependency
++  PolicyDisabled = 12,      // switched off by our own policy, not a fault
++  RestartRequired = 13,
++};
++
++struct Evidence {
++  EvidenceKind kind = EvidenceKind::FilePresent;
++  Confidence confidence = Confidence::Normal;
++  Timestamp observed_at = 0;
++  Millis ttl = kNoExpiry;
++  BlockerCode code = BlockerCode::None;
++  std::string detail;  // short, user-presentable, no trailing period
++
++  [[nodiscard]] bool fresh(Timestamp now) const {
++    if (ttl == kNoExpiry) return true;
++    const Millis age = now - observed_at;
++    return age >= 0 && age <= ttl;
++  }
++};
++
++// Convenience constructors. Keeping these here means probes cannot accidentally
++// mint a Liveness record with a Weak confidence and an infinite TTL.
++inline Evidence FileEvidence(Timestamp now, std::string detail) {
++  return Evidence{EvidenceKind::FilePresent, Confidence::Normal, now, kFileTtl,
++                  BlockerCode::None, std::move(detail)};
++}
++
++inline Evidence ModuleEvidence(Timestamp now, std::string detail) {
++  return Evidence{EvidenceKind::ModuleLoaded, Confidence::Normal, now, kModuleTtl,
++                  BlockerCode::None, std::move(detail)};
++}
++
++inline Evidence ContractEvidence(Timestamp now, std::string detail) {
++  return Evidence{EvidenceKind::ContractNegotiated, Confidence::Strong, now,
++                  kConfiguredTtl, BlockerCode::None, std::move(detail)};
++}
++
++inline Evidence ConfiguredEvidence(Timestamp now, std::string detail) {
++  return Evidence{EvidenceKind::Configured, Confidence::Strong, now, kConfiguredTtl,
++                  BlockerCode::None, std::move(detail)};
++}
++
++// Liveness always expires. There is no such thing as permanent proof that
++// frames are flowing.
++inline Evidence LivenessEvidence(Timestamp now, Confidence confidence,
++                                 std::string detail) {
++  return Evidence{EvidenceKind::Liveness, confidence, now, kLivenessTtl,
++                  BlockerCode::None, std::move(detail)};
++}
++
++inline Evidence BlockerEvidence(Timestamp now, BlockerCode code, std::string detail,
++                                Confidence confidence = Confidence::Normal) {
++  return Evidence{EvidenceKind::Blocker, confidence, now, kBlockerTtl, code,
++                  std::move(detail)};
++}
++
++// A bounded ledger. Capabilities keep only their most recent observations so a
++// long session cannot grow the graph without limit.
++class EvidenceLedger {
++ public:
++  static constexpr std::size_t kCapacity = 8;
++
++  void add(const Evidence& e) {
++    // One slot per kind: a newer observation of the same kind replaces the
++    // older one instead of stacking. This keeps "latest wins" obvious.
++    for (auto& existing : items_) {
++      if (existing.kind == e.kind) {
++        existing = e;
++        return;
++      }
++    }
++    if (items_.size() >= kCapacity) items_.erase(items_.begin());
++    items_.push_back(e);
++  }
++
++  void clear() { items_.clear(); }
++
++  // Drop the observation of one kind, e.g. when a blocker is explicitly cleared
++  // after a successful retry rather than being left to time out.
++  void retract(EvidenceKind kind) {
++    for (auto it = items_.begin(); it != items_.end(); ++it) {
++      if (it->kind == kind) {
++        items_.erase(it);
++        return;
++      }
++    }
++  }
++
++  [[nodiscard]] const std::vector<Evidence>& items() const { return items_; }
++
++  [[nodiscard]] const Evidence* find(EvidenceKind kind, Timestamp now) const {
++    for (const auto& e : items_) {
++      if (e.kind == kind && e.fresh(now)) return &e;
++    }
++    return nullptr;
++  }
++
++ private:
++  std::vector<Evidence> items_;
++};
++
++}  // namespace emko::core
++
++#endif  // SECRETEMKO_CORE_EVIDENCE_HPP
+diff --git a/v3/src/core/explain.cpp b/v3/src/core/explain.cpp
+new file mode 100644
+index 0000000..5af7caf
+--- /dev/null
++++ b/v3/src/core/explain.cpp
+@@ -0,0 +1,126 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/explain.cpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "core/explain.hpp"
++
++#include <cstdio>
++#include <string_view>
++
++namespace emko::core {
++namespace {
++
++std::string Num(float value) {
++  char buffer[32] = {};
++  std::snprintf(buffer, sizeof(buffer), "%.2f", static_cast<double>(value));
++  return buffer;
++}
++
++std::string Int(long long value) {
++  char buffer[32] = {};
++  std::snprintf(buffer, sizeof(buffer), "%lld", value);
++  return buffer;
++}
++
++const char* Yes(bool value) { return value ? "yes" : "no"; }
++
++const char* SeverityName(Severity severity) {
++  switch (severity) {
++    case Severity::Info: return "info";
++    case Severity::Notice: return "notice";
++    case Severity::Warning: return "warning";
++    case Severity::Blocked: return "blocked";
++  }
++  return "info";
++}
++
++// Left-aligned to a fixed width so the recorded copy diffs by content rather
++// than by column drift when a name changes length.
++std::string Pad(std::string_view text, std::size_t width) {
++  std::string out(text);
++  while (out.size() < width) out.push_back(' ');
++  return out;
++}
++
++}  // namespace
++
++std::string SummariseCapabilities(const Snapshot& snap) {
++  std::string out = "CAPABILITIES\n";
++
++  // Declaration order, which is topological: a dependency is always printed
++  // above the thing it holds back, so a reader working downwards meets the
++  // cause before the symptom.
++  for (std::size_t i = 0; i < kCapCount; ++i) {
++    const auto id = static_cast<CapId>(i);
++    const CapabilityDef& def = DefOf(id);
++    const CapabilityState& state = snap.states[i];
++
++    out += "  " + Pad(def.key, 26) + Pad(ToString(state.state), 10);
++
++    if (state.clamped_by != CapId::Count && state.clamped_by != id) {
++      out += "held by " + std::string(DefOf(state.clamped_by).key);
++    } else if (!state.reason.empty()) {
++      out += state.reason;
++    }
++    out += "\n";
++  }
++  return out;
++}
++
++std::string Summarise(const Snapshot& snap, const Plan& plan,
++                      const RuntimeFacts& facts) {
++  const Intent& intent = plan.intent;
++
++  std::string out = "SECRET EMKO decision summary\n\n";
++
++  out += "ASKED FOR\n";
++  out += "  look            " + std::string(ToString(intent.look)) + "\n";
++  out += "  strength        " + Num(intent.strength) + "\n";
++  out += "  passes          " + Num(intent.detail_passes) + "\n";
++  out += "  frames          " + std::string(ToString(intent.frame_gen)) + "\n";
++  out += "  priority        " + std::string(ToString(intent.priority)) + "\n";
