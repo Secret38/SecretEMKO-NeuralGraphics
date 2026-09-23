@@ -56,7 +56,7 @@ $built = Get-ChildItem -LiteralPath $buildDir -Recurse -File -Filter "renodx-sec
 if (-not $built) { throw "renodx-secretemko.addon64 not found after build" }
 
 $distRoot = Join-Path $RepoRoot "dist"
-$stage = Join-Path $distRoot "SecretEMKO-NeuralGraphics-v2.0.0-rc4"
+$stage = Join-Path $distRoot "SecretEMKO-NeuralGraphics-v2.0.0-rc5"
 $zip = "$stage.zip"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 if (Test-Path $zip) { Remove-Item $zip -Force }
@@ -122,7 +122,7 @@ Copy-Item $swapperLicense (Join-Path $stage "licenses\DLSS5-Swapper-LICENSE.txt"
 
 $manifest = [ordered]@{
     product = "SECRET EMKO Neural Graphics"
-    version = "2.0.0-rc4"
+    version = "2.0.0-rc5"
     built = (Get-Date).ToUniversalTime().ToString("o")
     renodx_commit = $Commit
     bridge_version = "1.4.13-pre8"
