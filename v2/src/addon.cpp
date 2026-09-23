@@ -806,7 +806,7 @@ void ApplyGamingStyle(int index, bool reset_strength = false) {
   g_nr.ui_correction = 1;
   g_nr.enable_upscaling = 0;
   if (reset_strength) g_nr.intensity = style.default_strength;
-  g_nr.enabled = 1;
+  g_nr.enabled = (g_fg_policy == 0 || NativeNrSharedReady()) ? 1 : 0;
 
   WriteConfig(kOwnSection, "GamingStyle", g_gaming_style);
   SetBackendLoadPolicy(true);
@@ -826,6 +826,11 @@ void PersistFrameGenerationSettings() {
 void ApplyCompatibilityMotionPath() {
   g_motion_path = 1;
   if (g_fg_policy != 0) g_fg_policy = 0;
+  if (g_nr_restore_after_fg) {
+    g_nr.enabled = 1;
+    g_nr_restore_after_fg = 0;
+    WriteNeuralSettings();
+  }
 
   // The compatibility path belongs to synthetic Neural Rendering only. Keep
   // the bridge's NVIDIA Optical Flow input, but never run it beside native FG.
@@ -881,6 +886,23 @@ bool ApplyNativeFrameGenPath(int policy) {
 }
 
 void SetNeuralEnabled(bool enabled) {
+  if (enabled && g_fg_policy != 0) {
+    if (!NativeNrSharedReady()) {
+      g_nr.enabled = 0;
+      g_backend_status = "Neural Rendering stays off while Frame Generation is active until the GTA shader-motion provider exposes a shared, frame-aligned NR contract.";
+      WriteNeuralSettings();
+      return;
+    }
+
+    g_nr.enabled = 1;
+    SetBackendLoadPolicy(true);
+    WriteNeuralSettings();
+    // Native provider owns temporal input while FG is active; never wake the
+    // Optical Flow compatibility bridge in this state.
+    WriteBridgeConfig(true);
+    return;
+  }
+
   g_nr.enabled = enabled ? 1 : 0;
 
   if (enabled) {
@@ -1364,7 +1386,7 @@ void DrawFrameGeneration() {
   const bool runtime = FrameGenRuntimeInstalled();
   const bool provider = FrameGenProviderInstalled();
   const bool loaded = FrameGenProviderLoaded();
-  const bool ready = runtime && provider && loaded;
+  const bool ready = FrameGenReady();
 
   ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.0f);
   ImGui::BeginChild("##fg_card", ImVec2(0, 0), true);
@@ -1388,18 +1410,21 @@ void DrawFrameGeneration() {
     }
   }
 
-  ImGui::BeginDisabled(!ready);
   ImGui::TextDisabled("MODE");
   const float gap = 8.0f;
   const float width = std::max(90.0f, (ImGui::GetContentRegionAvail().x - gap * 2.0f) / 3.0f);
-  const char* mode_names[] = {"Off", "2x", "3x"};
-  for (int i = 0; i < 3; ++i) {
-    if (i != 0) ImGui::SameLine(0.0f, gap);
-    if (ImGui::Button(mode_names[i], ImVec2(width, 38.0f))) {
-      (void)ApplyNativeFrameGenPath(i);
-    }
-  }
+  if (ImGui::Button("Off", ImVec2(width, 38.0f)))
+    (void)ApplyNativeFrameGenPath(0);
+  ImGui::SameLine(0.0f, gap);
+  ImGui::BeginDisabled(!ready);
+  if (ImGui::Button("2x", ImVec2(width, 38.0f)))
+    (void)ApplyNativeFrameGenPath(1);
+  ImGui::SameLine(0.0f, gap);
+  if (ImGui::Button("3x", ImVec2(width, 38.0f)))
+    (void)ApplyNativeFrameGenPath(2);
+  ImGui::EndDisabled();
 
+  ImGui::BeginDisabled(!ready || g_fg_policy == 0);
   ImGui::Spacing();
   if (g_fg_policy == 0)
     ImGui::TextDisabled("Input path: Compatibility motion for Neural Rendering");
@@ -1439,7 +1464,7 @@ void DrawFrameGeneration() {
   ImGui::EndDisabled();
 
   ImGui::Spacing();
-  ImGui::TextDisabled("Quality policy: no Optical Flow-only FG. The target provider requires geometry-derived motion, depth, HUD-less color and UI data.");
+  ImGui::TextDisabled("Quality policy: no Optical Flow-only FG. The target provider requires shader-injected GTA motion, depth, HUD-less color and UI data.");
   ImGui::EndChild();
   ImGui::PopStyleVar();
 }
@@ -1455,6 +1480,7 @@ void DrawDiagnostics() {
     const std::pair<const wchar_t*, const char*> rows[] = {
       {L"dxgi.dll", "ReShade"},
       {L"SecretEMKO.addon64", "Secret EMKO"},
+      {L"SecretEMKO-FG.addon64", "SECRET EMKO FG Provider"},
       {L"dlss5-bridge.addon64", "DLSS 5 Bridge"},
       {L"renodx-dlss5.addon64", "RenoDX DLSS 5"},
       {L"nvngx_dlss.dll", "DLSS SR"},
