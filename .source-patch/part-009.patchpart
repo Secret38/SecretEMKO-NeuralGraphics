@@ -1,0 +1,287 @@
++untruth this rewrite exists to remove. The telemetry block gains a `hudless`
++channel so the capability reaches Active on movement rather than on a flag,
++which is the same rule every other live component here follows. The block's
++version and mapping name moved to v3 accordingly, so a stale producer and a new
++consumer cannot meet.
++
++# Stage 3, part three: what the interface covers
++
++Built. `core/frame/overlay_mask.hpp` and `shaders/overlay_mask.hlsl`.
++
++## The plan that was rejected
++
++Give the interface its own render target, let it draw into transparent black,
++composite it back ourselves. It is the obvious plan and it quietly rewrites how
++the game blends.
++
++Interface elements do not all composite the same way. Some are straight
++source-over, some blend against what is behind them, some write alpha and some
++do not. Redirect them into a cleared target and every element relying on the
++scene being there gets a different answer — and the ones that never write alpha
++come out with no alpha at all, so they cannot be put back. The result is an
++interface that looks *almost* right, which is the worst available outcome
++because nobody can say what changed.
++
++## What is built instead
++
++The interface as an image is not what the pipeline needs. It needs to know which
++pixels to leave alone:
++
++- the neural pass should not sharpen text
++- generated frames should not interpolate a health bar between two positions
++- a moving map should not be smeared by motion vectors describing the world
++
++And the coverage is recoverable exactly, from two images already in hand. The
++scene was copied before the interface was drawn; the presented frame has the
++interface in it. Wherever they differ, the interface touched that pixel.
++
++No render target is rebound, no blend state is changed. The comparison happens
++afterwards, on two textures, and the worst a bug here can do is mask too much or
++too little — never make the interface render differently. On a server where the
++interface is largely a browser layer the game does not own, that distinction is
++the whole reason this approach works at all.
++
++Four decisions that each have a test:
++
++- **Per channel, not on luminance.** A damage tint or a selection highlight can
++  be a pure colour shift at the same brightness, and those are exactly the
++  elements a luminance test misses.
++- **Grown by a pixel.** Antialiased glyph edges change the image by less than
++  the body of the letter, so the raw mask ends a pixel short of the shape a
++  reader sees. A ring of unprocessed scene around each element is invisible; a
++  fringe of processed pixels around every letter is not.
++- **Held for a few frames.** A blinking indicator would switch the mask on and
++  off at its own rate, and a mask that flickers makes every edge shimmer. The
++  hold is a delay, not a memory — it runs out, so an element that is really gone
++  stops being protected.
++- **Refused when implausible.** Above 75% coverage this is a menu, a fade or a
++  loading screen, not an interface; protecting everything is the same as doing
++  nothing except that it does it while claiming to work. Below 0.01% on a server
++  with a permanent HUD, the comparison is broken rather than the HUD absent.
++
++Compositing is a choice, never a blend. A partial weight would mean a partly
++processed letter, and a partly processed letter is a fringe — the artifact the
++whole mechanism exists to prevent.
++
++## What it cannot do, stated plainly
++
++Under a semi-transparent element the presented image contains the *original*
++scene showing through, not the processed one, so that background stays
++unprocessed. It is not recoverable — one equation per channel, two unknowns — so
++it is not papered over. Behind a translucent panel it is invisible. Opaque
++interface, which is nearly all of it, is exact.
++
++## Status
++
++`CapId::UiLayer` now requires `HudlessColor`, because the comparison is
++impossible without the scene copy. Nothing dispatches the shader yet, so it
++stays unproven — the model and its GPU transcription exist and are tested, the
++wiring does not.
++
++# Stage 3, part four: knowing which pixels are a face
++
++Built. `core/frame/materials.hpp`.
++
++`core/semantic.hpp` has been able to hold skin back from being sharpened into
++sandpaper since it was written, and has never done it once, because nothing told
++it where skin is. This is that missing half.
++
++## What watching can and cannot conclude
++
++Being honest about this is the whole design.
++
++A draw call arrives as a shader identity and a handful of render states. Nothing
++in it says "skin". What *is* visible over many frames is how a shader behaves,
++and behaviour separates some things cleanly and others not at all:
++
++| | |
++|---|---|
++| **Provable** | The world. Its shaders run in essentially every frame, write depth, and fill several render targets at once. Nothing else does all three. |
++| **Provable** | Interface. Never touches depth at all — the same signal the frame segmenter uses, and the one thing screen-space drawing cannot fake. |
++| **Provable as a group** | Transparent surfaces. Blended, depth-*tested*, not depth-*writing* — occluded by the world without occluding each other. Glass and foliage are not separable from each other this way. |
++| **Not provable** | Skin against hair against clothing. Three shaders on the same character, in the same pass, with overlapping statistics. Any rule claiming to tell them apart from draw counts and vertex counts was fitted to one scene. |
++
++So the structural tier is derived and the semantic tier is not. `Subject` — 
++opaque geometry that comes and goes — is as far as inference goes, and it
++deliberately stops there rather than picking between a person, a car and a
++held object.
++
++## The catalogue, and why it is not a climbdown
++
++Shader hashes are stable for a given game build. One person calibrating once
++produces a table correct for everyone on that build, and it ships. The
++alternative — a heuristic right most of the time — puts a seam through a face
++the rest of the time, and a seam through a face is not a smaller failure than an
++unconfigured feature. It is a much larger one.
++
++Four rules, each with a test:
++
++- **Knowledge is never overwritten by inference.** A calibrated or shipped entry
++  survives any amount of further observation.
++- **Only knowledge may be assigned.** `assign` refuses a `Derived` source
++  outright; derivation happens in one place and cannot be spoofed through the
++  same door calibration uses.
++- **Pinned to a build.** An entry from another build is refused, and changing
++  build clears everything including calibrations. Asking again is a small cost;
++  holding a face at the wrong weight is not.
++- **An entry for a shader never seen is not a capability.** It is a table row.
++  Claiming the class would let a composite be planned for pixels that will never
++  be labelled.
++
++Before calibration, `availability()` returns exactly Environment, and
++`ComputeCompositePlan` then returns passthrough at 1.00× cost — bit for bit the
++product as it was before any of this existed. That is the property that let this
++ship.
++
++## A bug this found
++
++The first version counted only `frames_depth_written`, so glass — which tests
++depth without writing it — was indistinguishable from interface, which touches
++depth not at all. Testing and writing are different claims about a draw and are
++now counted separately. It was a modelling gap rather than a coding mistake,
++which is the kind these tests exist to catch.
++
++## Next
++
++1. Dispatching the mask and composite passes in the provider. This needs a
++   compute scaffold — pipeline creation, resource management, dispatch — which
++   is the same scaffold the native backend needs, so it is built once and
++   deliberately, with the mask as its first customer.
++2. The calibration screen, which is a small interface over
++   `needs_calibration()`: the busiest unassigned shaders, in the order worth
++   asking about.
++3. Then Stage 4: the native backend's first form — one feature handle, the image
++   pass only, at render scale 1.00.
+diff --git a/v3/docs/SEMANTIC.md b/v3/docs/SEMANTIC.md
+new file mode 100644
+index 0000000..9cc7b71
+--- /dev/null
++++ b/v3/docs/SEMANTIC.md
+@@ -0,0 +1,121 @@
++# One pass, treated differently per material
++
++The complaint this exists for: exaggerated pores, altered eyes, unnatural skin,
++over-sharpened hair, facial detail that was never in the source. A single
++strength applied to the whole frame is wrong in exactly that way — the setting
++that makes asphalt and car paint look right makes a face look like sandpaper.
++
++NVIDIA reached the same conclusion for DLSS 5, which exposes semantic AI masking
++and engine-level masks, and whose NBA 2K27 integration uses a per-pixel uplift
++control mask "to fine-tune character detail while respecting player likenesses".
++Worth noting which direction that is: the reference case uses the mask to **hold
++detail back**, not to add more.
++
++## Why this is not a second pass
++
++A neural pass costs GPU time. Its *temporal history* costs memory, costs
++stability, and is where ghosting comes from — and a second evaluation needs a
++second history. Everything difficult about this product scales with the number
++of histories, not with the number of arithmetic operations.
++
++One pass, one history, and the variation applied afterwards.
++
++## How one pass produces per-pixel strength
++
++A black-box provider takes scalar parameters, not a per-pixel parameter field.
++So the variation cannot happen *inside* the evaluation — but it does not need
++to. Run the pass once at the strongest setting any material asks for. That gives
++the input `I` and the output `O`, and the entire effect is `D = O − I`. Then:
++
++```
++final(x) = I(x) + w(x) · D(x)
++```
++
++One evaluation, one blend, per-pixel strength. Compositing can only attenuate
++relative to the peak, never exceed it — which is the correct limitation, because
++the whole motivation is holding skin and hair back.
++
++## How one pass produces *structure* and *tone* separately
++
++A single `D` cannot give independent control of fine detail and broad lighting
++response: they are entangled in one image. But they are not entangled in one
++frequency band. Structure is high-frequency by definition, tone is low-frequency
++by definition, so one separable blur splits them:
++
++```
++final(x) = I(x) + tone(x) · blur(D)(x) + structure(x) · (D − blur(D))(x)
++```
++
++Faces can now keep most of their lighting while giving up most of their texture,
++from a single evaluation. The separation is approximate and is documented as
++approximate; what has to hold is that it is monotonic and that no material can
++exceed what the single pass produced, and both are asserted in `test_semantic.cpp`.
++
++## What it costs
++
++| | Relative to one plain pass |
++|---|---|
++| Uniform profile (nothing varies) | 1.00× — the stage is skipped outright |
++| Varying, structure and tone move together | 1.06× — one lerp, no blur |
++| Varying independently | 1.18× — one separable blur plus the blend |
++| Full second pass, for comparison | 2.15× |
++
++The blur is only paid for when some material actually asks for a different
++amount of detail than of lighting. That check is in the plan, not in the shader.
++
++## The classes
++
++Eight, three bits, one `R8` mask — about two megabytes at 4K and half
++resolution. Memory is not what costs anything here.
++
++```
++0 Environment   1 Character   2 Skin      3 Hair
++4 Vehicle       5 Weapon      6 Vegetation 7 Glass
++```
++
++Environment is zero on purpose: an unwritten mask means "treat it like the
++world", so a mask that fails to populate degrades into today's behaviour rather
++than into something new and wrong.
++
++## Defaults
++
++The defaults are the answer to the complaint, not a neutral starting point.
++Someone who never opens the page should still stop getting invented pores.
++
++| Material | Structure | Tone |
++|---|---|---|
++| Skin | 0.35 | 0.80 |
++| Hair | 0.30 | 0.85 |
++| Glass | 0.50 | 0.90 |
++| Vegetation | 0.60 | 1.00 |
++| Everything else | 1.00 | 1.00 |
++
++Skin gives up detail, not lighting. Held back on both it would just look flat,
++which is a different complaint rather than a fix.
++
++## An unproven class is not a class
++
++A material the mask cannot identify is treated as Environment — not as itself
++applied to nothing, and not as an average applied to the wrong pixels. A wrong
++mask puts a visible seam through a face, which is worse than no separation at
++all. With nothing proven, the plan is bit-for-bit today's product at today's
++cost.
++
++## What is still open
++
++The mask itself. GTA V supplies no semantic IDs, so the classes have to come
++from draw classification — which is Stage 3, already the next build step. Skin
++against hair against clothing is material-level, so it needs per-draw shader
++identity rather than the stencil buffer alone, and that has to be verified
++against the running build rather than assumed.
++
++Two honest caveats on the arithmetic:
++
++- The history accumulated at the peak setting, while the displayed image is
++  attenuated. For a post-process uplift that is benign; if the provider feeds
++  its own output back, the consequence has to be measured, not reasoned about.
++- `w` is a weight in image space, not a strength in parameter space. `0.5` means
++  halfway between untouched and full effect, which is not the same as running
++  the model at half strength. It is monotonic and predictable — arguably more
++  predictable — but it is not the same thing, and the interface should not
++  imply that it is.
+diff --git a/v3/presets/Secret_Emko_Main.ini b/v3/presets/Secret_Emko_Main.ini
+new file mode 100644
+index 0000000..7e58459
+--- /dev/null
++++ b/v3/presets/Secret_Emko_Main.ini
+@@ -0,0 +1,366 @@
