@@ -277,7 +277,14 @@ jobs:
           $iniText = Get-Content -LiteralPath $ini -Raw
           $iniText = [regex]::Replace($iniText, '(?m)^NRIntensity=.*$', 'NRIntensity=1.470000')
           $iniText = [regex]::Replace($iniText, '(?m)^NeuralUplift=.*$', 'NeuralUplift=0')
-          $iniText = [regex]::Replace($iniText, '(?m)^BackendsNextStart=.*            $iniText,
+          $iniText = [regex]::Replace($iniText, '(?m)^BackendsNextStart=.*$', 'BackendsNextStart=0')
+          $iniText = [regex]::Replace($iniText, '(?m)^GamingStyle=.*$', 'GamingStyle=2')
+          $iniText = [regex]::Replace($iniText, '(?m)^MotionPath=.*$', 'MotionPath=1')
+          $iniText = [regex]::Replace($iniText, '(?m)^FrameGenerationBaseFPS=.*$', 'FrameGenerationBaseFPS=72')
+          $iniText = [regex]::Replace($iniText, '(?m)^FrameGenerationHUDMode=.*$', 'FrameGenerationHUDMode=1')
+          $iniText = [regex]::Replace($iniText, '(?m)^FrameGenerationAutoPause=.*$', 'FrameGenerationAutoPause=0')
+          $iniText = [regex]::Replace(
+            $iniText,
             '(?m)^DisabledAddons=.*$',
             'DisabledAddons=SECRET EMKO RenoDX backend@renodx-dlss5.addon64,SECRET EMKO DLSS5 bridge@dlss5-bridge.addon64'
           )
@@ -292,7 +299,14 @@ jobs:
           $after = Get-Content -LiteralPath $ini -Raw
           if ($after -notmatch '(?m)^NRIntensity=1\.470000\r?$') { throw "Installer reset NRIntensity" }
           if ($after -notmatch '(?m)^NeuralUplift=0\r?$') { throw "Installer re-enabled Neural Rendering" }
-          if ($after -notmatch '(?m)^BackendsNextStart=0\r?            throw "Installer lost DisabledAddons backend policy"
+          if ($after -notmatch '(?m)^BackendsNextStart=0\r?$') { throw "Installer reset backend load policy" }
+          if ($after -notmatch '(?m)^GamingStyle=2\r?$') { throw "Installer reset RC5 gaming style" }
+          if ($after -notmatch '(?m)^MotionPath=1\r?$') { throw "Installer reset RC5 motion path" }
+          if ($after -notmatch '(?m)^FrameGenerationBaseFPS=72\r?$') { throw "Installer reset RC5 base FPS" }
+          if ($after -notmatch '(?m)^FrameGenerationHUDMode=1\r?$') { throw "Installer reset RC5 HUD mode" }
+          if ($after -notmatch '(?m)^FrameGenerationAutoPause=0\r?$') { throw "Installer reset RC5 FG auto-pause state" }
+          if ($after -notmatch 'renodx-dlss5\.addon64' -or $after -notmatch 'dlss5-bridge\.addon64') {
+            throw "Installer lost DisabledAddons backend policy"
           }
           if ((Get-Content -LiteralPath $bridge -Raw) -notmatch '(?m)^ofa_grid=1\r?$') {
             throw "Installer reset bridge quality state"
