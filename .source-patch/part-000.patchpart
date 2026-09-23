@@ -1,0 +1,348 @@
+diff --git a/.github/workflows/build-v3.yml b/.github/workflows/build-v3.yml
+new file mode 100644
+index 0000000..7b4efc6
+--- /dev/null
++++ b/.github/workflows/build-v3.yml
+@@ -0,0 +1,147 @@
++name: Build SECRET EMKO v3 Player Test
++
++on:
++  workflow_dispatch:
++  push:
++    branches: [ main, v3-17-alpha1-player-test ]
++    paths:
++      - "v3/**"
++      - ".github/workflows/build-v3.yml"
++  pull_request:
++    branches: [ main ]
++    paths:
++      - "v3/**"
++      - ".github/workflows/build-v3.yml"
++
++jobs:
++  build:
++    runs-on: windows-2022
++    permissions:
++      contents: read
++
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v4
++
++      - name: Toolchain
++        shell: powershell
++        run: |
++          git --version
++          cmake --version
++
++      - name: Validate PowerShell syntax
++        shell: powershell
++        run: |
++          $scripts = @(
++            ".\v3\tools\Install-SecretEMKO.ps1",
++            ".\v3\tools\Uninstall-SecretEMKO.ps1",
++            ".\v3\tools\Update-ReShadeContent.ps1",
++            ".\v3\tools\build.ps1"
++          )
++          foreach ($script in $scripts) {
++            $tokens = $null
++            $errors = $null
++            [void][System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$tokens, [ref]$errors)
++            if ($errors.Count -gt 0) {
++              $errors | ForEach-Object { Write-Error $_ }
++              throw "PowerShell syntax validation failed: $script"
++            }
++          }
++
++      - name: Build and run portable decision-layer tests
++        shell: powershell
++        run: |
++          cmake -S .\v3 -B .\v3\build-core -A x64
++          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
++          cmake --build .\v3\build-core --config Release --target emko_tests --parallel 2
++          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
++          .\v3\build-core\Release\emko_tests.exe
++          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
++
++      - name: Build native add-ons and player package
++        shell: powershell
++        run: |
++          .\v3\tools\build.ps1 -WorkDir "$env:RUNNER_TEMP\SecretEMKO-v3-work"
++
++      - name: Verify player package structure
++        shell: powershell
++        run: |
++          $stage = ".\v3\dist\SecretEMKO-NeuralGraphics-v3.16.0"
++          $required = @(
++            "SecretEMKO.addon64",
++            "SecretEMKO-FG.addon64",
++            "dlss5-bridge.addon64",
++            "SECRET-EMKO.bat",
++            "UNINSTALL.bat",
++            "README.md",
++            "BUILD-MANIFEST.json",
++            "tools\Install-SecretEMKO.ps1",
++            "tools\Uninstall-SecretEMKO.ps1",
++            "tools\Update-ReShadeContent.ps1",
++            "config\ReShade.SecretEMKO.ini",
++            "presets\Secret_Emko_Main.ini",
++            "presets\Secret_Emko_Stream.ini",
++            "licenses\RenoDX-LICENSE.txt",
++            "licenses\DLSS5-Bridge-LICENSE.txt",
++            "licenses\DLSS5-Swapper-LICENSE.txt",
++            "docs\FIRST-RUN.md"
++          )
++          foreach ($relative in $required) {
++            if (-not (Test-Path -LiteralPath (Join-Path $stage $relative))) { throw "Missing release file: $relative" }
++          }
++          $manifest = Get-Content -LiteralPath (Join-Path $stage "BUILD-MANIFEST.json") -Raw | ConvertFrom-Json
++          if ($manifest.version -ne "3.16.0") { throw "Wrong package version" }
++          if ($manifest.renodx_commit -ne "9b212edad4dde9bca2b823b1e045b712b1a8d854") { throw "RenoDX ref is not pinned" }
++          if ($manifest.bridge_sha256 -ne "C4C8B5BC4B26B2B3F3BF2767CDB708546D62F7D0BBB63D24E940C736DA9EFE26") { throw "Bridge pin mismatch" }
++
++      - name: Source ZIP rejection / WhatIf preflight
++        shell: powershell
++        run: |
++          $stage = (Resolve-Path ".\v3\dist\SecretEMKO-NeuralGraphics-v3.16.0").Path
++          $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO WhatIf FiveM"
++          $app = Join-Path $fake "FiveM.app"
++          New-Item -ItemType Directory -Path $app -Force | Out-Null
++          Set-Content -LiteralPath (Join-Path $app "CitizenFX.ini") -Value "[Game]"
++          & (Join-Path $stage "tools\Install-SecretEMKO.ps1") -FiveMPath $fake -Mode Neural -AcceptUnsupportedHardware -NonInteractive -WhatIf
++          if ($LASTEXITCODE -ne 0) { throw "WhatIf preflight failed" }
++          if (Test-Path -LiteralPath (Join-Path $app "plugins")) { throw "WhatIf modified FiveM" }
++
++      - name: End-to-end Neural install and exact uninstall
++        shell: powershell
++        run: |
++          $stage = (Resolve-Path ".\v3\dist\SecretEMKO-NeuralGraphics-v3.16.0").Path
++          $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO E2E FiveM"
++          $app = Join-Path $fake "FiveM.app"
++          $plugins = Join-Path $app "plugins"
++          New-Item -ItemType Directory -Path $plugins -Force | Out-Null
++          Set-Content -LiteralPath (Join-Path $app "CitizenFX.ini") -Value "[Game]"
++          Set-Content -LiteralPath (Join-Path $plugins "sentinel.txt") -Value "preserve-me"
++
++          & (Join-Path $stage "tools\Install-SecretEMKO.ps1") -FiveMPath $fake -Mode Neural -AcceptUnsupportedHardware -NonInteractive
++          if ($LASTEXITCODE -ne 0) { throw "Neural install failed" }
++
++          foreach ($name in @(
++            "dxgi.dll","ReShade.ini","SecretEMKO.addon64","SecretEMKO-FG.addon64",
++            "renodx-dlss5.addon64","dlss5-bridge.addon64","nvngx_dlssnr.dll","nvngx_dlss.dll",
++            "Secret_Emko_Main.ini","Secret_Emko_Stream.ini"
++          )) {
++            if (-not (Test-Path -LiteralPath (Join-Path $plugins $name))) { throw "Missing installed file: $name" }
++          }
++          $ini = Get-Content -LiteralPath (Join-Path $plugins "ReShade.ini") -Raw
++          if ($ini -notmatch 'SECRET EMKO compatibility bridge@dlss5-bridge\.addon64') { throw "Bridge did not start disabled" }
++          if (Test-Path -LiteralPath (Join-Path $plugins "sentinel.txt")) { throw "Original plugins were not isolated" }
++
++          $journal = Get-ChildItem "$env:LOCALAPPDATA\SecretEMKO\journals" -Filter "install-*.jsonl" | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
++          if (-not $journal) { throw "Install journal missing" }
++          & (Join-Path $stage "tools\Uninstall-SecretEMKO.ps1") -Journal $journal.FullName -NonInteractive
++          if ($LASTEXITCODE -ne 0) { throw "Uninstall failed" }
++          if (-not (Test-Path -LiteralPath (Join-Path $plugins "sentinel.txt"))) { throw "Original plugins were not restored" }
++          if ((Get-Content -LiteralPath (Join-Path $plugins "sentinel.txt") -Raw).Trim() -ne "preserve-me") { throw "Restored plugins changed" }
++
++      - name: Upload player artifact
++        uses: actions/upload-artifact@v4
++        with:
++          name: SecretEMKO-NeuralGraphics-v3.16.0-player-test
++          path: v3/dist/SecretEMKO-NeuralGraphics-v3.16.0/**
++          if-no-files-found: error
++          compression-level: 9
+diff --git a/v3/.gitignore b/v3/.gitignore
+new file mode 100644
+index 0000000..5513507
+--- /dev/null
++++ b/v3/.gitignore
+@@ -0,0 +1,4 @@
++build/
++work/
++dist/
++*.user
+diff --git a/v3/CMakeLists.txt b/v3/CMakeLists.txt
+new file mode 100644
+index 0000000..65f470e
+--- /dev/null
++++ b/v3/CMakeLists.txt
+@@ -0,0 +1,144 @@
++# SECRET EMKO Neural Graphics v3
++#
++# Two targets:
++#   emko_core  - the entire decision layer. Portable C++20, no Windows, no
++#                ReShade, no ImGui. This is what the tests exercise.
++#   emko_tests - the test binary. Runs on any host, including CI containers
++#                that have no GPU and no Windows SDK.
++#
++# The Windows shell (probes, effectors, ImGui pages) lives under src/platform,
++# src/probe, src/effect and src/ui and is built by tools/build.ps1 inside the
++# RenoDX tree, which is where the ReShade add-on headers come from.
++
++cmake_minimum_required(VERSION 3.20)
++project(SecretEmkoNeuralGraphics VERSION 3.16.0 LANGUAGES CXX)
++
++set(CMAKE_CXX_STANDARD 20)
++set(CMAKE_CXX_STANDARD_REQUIRED ON)
++set(CMAKE_CXX_EXTENSIONS OFF)
++
++add_library(emko_core STATIC
++    src/core/capability.cpp
++    src/core/look.cpp
++    src/core/plan.cpp
++    src/core/arbitration.cpp
++    src/core/planner.cpp
++    src/core/status.cpp
++    src/core/motion/math.cpp
++    src/core/motion/camera.cpp
++    src/core/motion/viewproj_detector.cpp
++    src/core/motion/reprojection.cpp
++    src/core/motion/confidence.cpp
++    src/core/frame_packet.cpp
++    src/core/budget.cpp
++    src/core/priority.cpp
++    src/core/passes.cpp
++    src/core/semantic.cpp
++    src/core/backend.cpp
++    src/core/frame/draw.cpp
++    src/core/frame/segmentation.cpp
++    src/core/frame/overlay_mask.cpp
++    src/core/frame/materials.cpp
++    src/core/frame/material_file.cpp
++    src/core/vram.cpp
++    src/core/safety.cpp
++    src/core/explain.cpp
++    src/app/kernel.cpp
++)
++target_include_directories(emko_core PUBLIC src)
++
++if(MSVC)
++    target_compile_options(emko_core PRIVATE /W4 /permissive-)
++else()
++    target_compile_options(emko_core PRIVATE
++        -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion)
++endif()
++
++enable_testing()
++
++add_executable(emko_tests
++    tests/main.cpp
++    tests/test_capability.cpp
++    tests/test_look.cpp
++    tests/test_arbitration.cpp
++    tests/test_planner.cpp
++    tests/test_kernel.cpp
++    tests/test_motion_math.cpp
++    tests/test_viewproj_detector.cpp
++    tests/test_reprojection.cpp
++    tests/test_frame_packet.cpp
++    tests/test_budget.cpp
++    tests/test_passes.cpp
++    tests/test_semantic.cpp
++    tests/test_backend.cpp
++    tests/test_frame_segmentation.cpp
++    tests/test_overlay_mask.cpp
++    tests/test_materials.cpp
++    tests/test_material_file.cpp
++    tests/test_vram.cpp
++    tests/test_safety.cpp
++    tests/test_golden_plans.cpp
++)
++target_link_libraries(emko_tests PRIVATE emko_core)
++target_compile_definitions(emko_tests PRIVATE
++    EMKO_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/golden")
++target_include_directories(emko_tests PRIVATE . src)
++
++add_test(NAME core COMMAND emko_tests)
++
++# ---------------------------------------------------------------------------
++# Off-platform syntax check for the Windows layer.
++#
++# These translation units cannot be *built* without the Windows SDK, the ReShade
++# add-on API and Dear ImGui. They can, however, be parsed and type-checked
++# against the stubs in tests/stubs, which catches every syntax error, every
++# wrong type and every missing include before any of it reaches a Windows
++# machine. It is not a substitute for the MSVC build; it is the cheap half of it.
++#
++#   cmake --build build --target syntax_check
++# ---------------------------------------------------------------------------
++
++if(NOT MSVC)
++    set(EMKO_WINDOWS_SOURCES
++        src/platform/win_paths.cpp
++        src/platform/telemetry.cpp
++        src/platform/config_store.cpp
++        src/platform/video_memory.cpp
++        src/probe/probes.cpp
++        src/effect/effectors.cpp
++        src/ui/shell.cpp
++        src/addon_main.cpp
++    )
++
++    # The input provider includes the RenoDX shader utility by a path relative to
++    # its own position in the RenoDX tree, so it needs one extra include root to
++    # resolve against the stubs. Type-checking it matters more than the tidiness
++    # of a uniform command: it is the file that runs on every draw call.
++    set(EMKO_PROVIDER_SOURCES src/fg/fg_provider.cpp)
++
++    set(EMKO_SYNTAX_COMMANDS "")
++    foreach(source IN LISTS EMKO_WINDOWS_SOURCES)
++        list(APPEND EMKO_SYNTAX_COMMANDS
++            COMMAND ${CMAKE_CXX_COMPILER} -std=c++20 -fsyntax-only
++                    -Wall -Wextra
++                    -I ${CMAKE_CURRENT_SOURCE_DIR}/src
++                    -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/stubs
++                    ${CMAKE_CURRENT_SOURCE_DIR}/${source})
++    endforeach()
++
++    foreach(source IN LISTS EMKO_PROVIDER_SOURCES)
++        list(APPEND EMKO_SYNTAX_COMMANDS
++            COMMAND ${CMAKE_CXX_COMPILER} -std=c++20 -fsyntax-only
++                    -Wall -Wextra
++                    -I ${CMAKE_CURRENT_SOURCE_DIR}/src
++                    -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/stubs
++                    -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/stubs/emko-tree/renodx/src
++                    ${CMAKE_CURRENT_SOURCE_DIR}/${source}
++        )
++    endforeach()
++
++    add_custom_target(syntax_check
++        ${EMKO_SYNTAX_COMMANDS}
++        COMMENT "Type-checking the Windows layer against stub headers"
++        VERBATIM)
++endif()
+diff --git a/v3/LICENSE b/v3/LICENSE
+new file mode 100644
+index 0000000..778c91c
+--- /dev/null
++++ b/v3/LICENSE
+@@ -0,0 +1,21 @@
++MIT License
++
++Copyright (c) 2026 Secret EMKO
++
++Permission is hereby granted, free of charge, to any person obtaining a copy
++of this software and associated documentation files (the "Software"), to deal
++in the Software without restriction, including without limitation the rights
++to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
++copies of the Software, and to permit persons to whom the Software is
++furnished to do so, subject to the following conditions:
++
++The above copyright notice and this permission notice shall be included in all
++copies or substantial portions of the Software.
++
++THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++SOFTWARE.
+diff --git a/v3/README.md b/v3/README.md
+new file mode 100644
+index 0000000..16d1939
+--- /dev/null
++++ b/v3/README.md
+@@ -0,0 +1,171 @@
++# SECRET EMKO Neural Graphics v3
++
