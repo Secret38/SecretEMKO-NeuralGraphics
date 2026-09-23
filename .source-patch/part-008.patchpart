@@ -1,0 +1,285 @@
++**Goal.** Motion that is correct for things that move on their own. This is the
++stage that makes frame generation actually good, and the one that unlocks running
++neural rendering and frame generation together.
++
++**How.** Intercept vertex shader creation (`init_pipeline` / `create_pipeline`),
++and make the shader also output the previous frame's clip-space position.
++
++Two routes:
++
++**(a) Automated bytecode patching.** Parse DXBC, add an output register, append
++instructions that compute the previous clip position from a previous world matrix
++supplied through an extra constant buffer slot. This is what an automated
++solution does, and it covers every shader without curation. It needs a DXBC
++assembler. Note that the well-known open-source one is GPL-3, which is
++incompatible with this project's MIT licence — a clean-room implementation would
++be required, not a copy.
++
++**(b) Targeted replacement through RenoDX.** You are already building inside the
++RenoDX tree, and shader dumping plus hash-keyed replacement is precisely what
++that framework does. Dump the scene vertex shaders, identify the ones that
++actually matter, hand-write HLSL replacements that also emit motion, compile with
++DXC, swap by hash at pipeline creation.
++
++**Route (b) is the pragmatic one**, because you do not need per-object motion for
++*everything*. Static world geometry is already exact from Stage 2. What needs
++per-object motion is the set of things that move independently — vehicles,
++pedestrians, animated props. That is tens of shaders, not hundreds, and the
++classification data tells you which ones they are.
++
++**The genuinely hard part is not the injection.** It is object identity across
++frames: to compute previous clip position you need the object's *previous*
++transform, which means recognising that this draw call is the same object as one
++from the last frame. Candidate keys are a hash of index buffer plus vertex buffer
++plus draw offsets, or the contents of the object's own constant buffer. Skinned
++characters need previous bone matrices as well, which multiplies the state you
++have to carry.
++
++Expect this stage to be where most of the total effort goes.
++
++**Ships.** Ghost-free frame generation. `GeometryMotion` reaches `READY`, and the
++shared-contract flag becomes truthful, so neural rendering and frame generation
++run together — the arbitration path that is already implemented and tested.
++
++**Effort.** Months.
++
++---
++
++## Stage 6 — Upscaling
++
++**Goal.** Render below native resolution, reconstruct to native.
++
++**How.** Intercept scene-sized render target creation and scale it; adjust
++viewports and scissors to match; inject a per-frame jitter into the projection
++matrix before the constant buffer is uploaded (Halton, and hand the same offsets
++to DLSS); evaluate DLSS-SR on low-resolution colour plus depth plus motion;
++composite the interface on top at full resolution.
++
++**Why this is last.** It is the most invasive stage by a wide margin. Post-process
++chains that assume a fixed relationship between buffer sizes break. Interface
++elements that were full-resolution now are not. Anything that samples a
++scene-sized target with hard-coded texel offsets misbehaves. Every one of those is
++found by playing, not by reading code.
++
++**Worth asking before starting it.** Upscaling pays off when you are GPU-bound.
++GTA V on a populated RP server is frequently CPU-bound instead, and no amount of
++upscaling helps there. Measure your actual bottleneck on the servers you play
++before committing months to this stage.
++
++**Effort.** Months.
++
++---
++
++## Total, honestly
++
++Stages 1–3 are weeks of work and deliver real improvements to neural rendering on
++their own. Stages 4–6 are the bulk, and a realistic estimate for a solo developer
++is measured in quarters, not weeks. The existing paid solution in this space
++represents years of work; there is no version of this that is a weekend.
++
++The sequencing above is designed so you can stop after any stage and still be
++ahead of where you started.
++
++---
++
++## The thing to settle before any of it
++
++Everything from Stage 2 onwards means patching the game's shaders and running
++ReShade with full add-on support. That is exactly the class of client
++modification that FiveM's Pure Mode and server anticheat exist to block, and a
++server that forbids it will keep forbidding it no matter how good the
++implementation is.
++
++So the question to answer first is not technical:
++
++> On the servers I actually play, is a full add-on ReShade stack with patched
++> shaders permitted?
++
++If the answer is no, Stages 4–6 produce something you cannot use where you want to
++use it. If the answer is yes for some servers, the work is worth doing, and the
++status model already handles "installed correctly but not permitted here" as a
++distinct state rather than as a failure.
++
++---
++
++## Licensing note
++
++Reimplementing a technique from its public description is fine. Copying code,
++binaries, shader patches or authentication from a paid mod is not, and this
++project has been explicit about that from v2 onwards. Keep it that way — the
++architecture documentation says so, and it should stay true.
++
++---
++
++## Suggested first move
++
++Stage 1 and the detector for it. It is days of work, it has an unambiguous pass
++condition (does the reconstructed camera position track the player?), and every
++later stage is blocked on it.
++
++The second move is the flag split described in Stage 2, so that camera-only motion
++can light up the neural path without ever being mistaken for something the
++generator is allowed to use.
++
++---
++
++# Becoming the provider
++
++Everything above was written on the assumption that somebody else runs the
++model and we work out what they are doing. `core/backend.hpp` turns that
++assumption into a variable.
++
++## Why this is the pivot
++
++Look at what is currently built and inert:
++
++| Built, tested, switched off | Blocked on |
++|---|---|
++| The 1.00–2.00 second-pass dial | two feature handles with separate histories |
++| Per-material weights inside the model | a control mask reaching the evaluation |
++| The antialiasing benefit at render scale 1.00 | driving the projection jitter |
++| Rendering below native | the same, plus the game's own TAA |
++| Generated frames | the D3D11/D3D12 interop and Reflex |
++
++That is five different features, and it looks like five different problems. It
++is one problem: **the feature is created and owned by somebody else, so its
++inputs are not ours to supply.** Every row above follows from that single fact,
++and every row above is fixed by the same single change.
++
++So the question is not "can we add these five things". It is "do we own the
++feature". Owning it is Stages 4 to 6, and those stages were always the large
++part of the work — the interop, the jitter, disabling the game's TAA. What the
++backend interface changes is that they no longer have to land all at once: a
++native backend can exist alongside the third-party one and be chosen only for
++what it has actually proven.
++
++## The rule that does not relax
++
++A capability of a backend we wrote may be **declared** — the statement and the
++implementation are in the same repository and change together. A capability of
++anyone else's backend must be **observed**, every session, because their next
++release can remove it and will not tell us.
++
++Those are different functions in `core/backend.hpp` and the distinction is
++asserted in `test_backend.cpp`. Collapsing them into one `supports` flag would
++be the convenient thing to do and would quietly undo the entire evidence model —
++a stale flag is exactly how a feature ends up switched on and doing nothing,
++which is the v2 bug this rewrite exists to fix.
++
++`NativeTarget()` is the specification the native path has to meet, written in
++code rather than in prose so it is compiled and asserted. A test checks it is
++strictly better than what the third-party path can be observed to do — if it
++were not, there would be no reason to write it — and that it never loses a
++capability the existing path has. A replacement that drops something is not a
++replacement.
++
++## Order of work
++
++1. **Stage 3, unchanged.** HUD-less colour, the interface layer, draw
++   classification. This is also where the semantic mask comes from, so it now
++   pays for two features rather than one. Nothing else moves until it is done.
++2. **A native backend that does nothing but the image pass.** NGX directly, one
++   feature handle, no generation, no upscaling — render scale 1.00, which is
++   where the personal setup already sits. Correctness first, on the smallest
++   possible surface.
++3. **Jitter and the game's TAA.** The antialiasing benefit at 1.00 becomes real,
++   and reconstruction below 1.00 becomes possible for the first time.
++4. **The second handle.** The two-pass dial stops being inert. So does the
++   control mask, which makes the per-material weights exact rather than
++   composited.
++5. **Stage 4 as written: interop, DLSS-G, Reflex.** The largest single piece,
++   and deliberately last, because it is the one that can destabilise everything
++   before it.
++
++## What not to claim
++
++Until step 2 exists, this is a control layer with a well-specified interface for
++becoming something else. The interface is real, compiled and tested. The native
++backend is not written. Those are different things and the status vocabulary
++already has words for the difference.
++
++---
++
++# Stage 3, part one: telling the frame apart
++
++Built. `core/frame/draw.hpp` and `core/frame/segmentation.hpp`, with the draw
++observer that feeds them in the input provider.
++
++## The rule
++
++Interface is drawn last. Not "usually last" — last, because compositing order is
++what makes it visible, and a renderer that drew the HUD before the world would
++be drawing a HUD nobody can see. So the frame ends in a run of interface draws,
++and the capture point is where that run begins.
++
++That gives a rule which recognises no interface element at all: find the last
++draw that is definitely world or image work, and cut after it. Text, icons,
++bars, markers, and a browser-rendered layer the game does not own all land on
++the far side of the cut without being identified individually. On a server with
++a large custom interface, that is the difference between a rule that works and a
++list somebody has to maintain.
++
++## Why nothing here returns a bare answer
++
++Being wrong is expensive in both directions. Cut too early and the world's last
++effects are treated as interface, which freezes part of the picture. Cut too
++late and text is smeared by the pass that was meant to improve it. Neither is
++subtle, and both are reported as "it looks broken" rather than as a setting.
++
++So `ClassifyDraw` returns a *prior*, with a confidence and a reason, and it is
++deliberately denied any knowledge of where it is in the frame. A full-screen
++quad with blending is either a browser layer or a bloom composite; only the
++frame knows which, so the per-draw rule says so instead of guessing. Keeping
++that split is what stops a per-draw rule from being tuned until it fits one
++scene and breaks on the next.
++
++The segmenter then requires the boundary to hold still for 30 frames before it
++is used, and drops it after 6 that disagree. Losing it is faster than finding it
++on purpose: every frame spent using a stale boundary is a frame drawn wrongly. A
++resolution change invalidates it outright rather than waiting to be noticed, and
++a near-empty frame — a loading screen, a device reset — is ignored rather than
++believed, because admitting one as evidence is how the boundary ends up at zero
++and stays there.
++
++## What this earns, and what it does not
++
++`CapId::FrameSegmentation` is a new node, and `HudlessColor` now requires it.
++Knowing *where* to capture and *having captured* are different claims, so they
++are different bits and different nodes. This build earns the first. The second
++is still masked off in the provider, alongside everything else that is not yet
++true.
++
++That distinction is the whole reason the segmentation work can ship before the
++capture work without anything in the interface becoming a lie.
++
++# Stage 3, part two: the copy
++
++Built. `HudlessCapture` in the input provider.
++
++This is the first code in the product that does something to the frame rather
++than watching it, so it is arranged to be as close to inert as a thing that
++allocates a texture can be:
++
++- **Only behind a locked boundary.** Without the lock there is no capture and
++  the product behaves exactly as it did before this existed.
++- **Copied immediately before the first interface draw.** ReShade's draw event
++  fires *before* the draw, so copying "after the last world draw" means copying
++  at the draw that follows it — which has to be exactly the first interface
++  draw. That off-by-one is the whole correctness of the feature, so it is
++  asserted in `test_frame_segmentation.cpp` rather than left to be discovered.
++- **No resolve, no conversion, no scaling.** The destination is the source's own
++  description with the heap and usage changed, so there is no format decision to
++  get wrong. A multisampled target would need a resolve, which is a different
++  operation with different failure modes, so it is refused with a reason rather
++  than done quietly.
++- **One failure switches it off for the session.** A copy that failed once will
++  fail sixty times a second, and the second failure carries no information the
++  first did not.
++- **Barriers are issued unconditionally.** D3D11 ignores them; D3D12 does not,
++  and getting them wrong there is a corrupted copy rather than an error.
++
++## What it earns
++
++`kProviderHudless` is no longer masked off — but it is a claim about the last
++few frames, not about the session. A copy that worked once and has since stopped
++is not a HUD-less image, and reporting it as one would be precisely the class of
