@@ -1,0 +1,310 @@
++Hard-coded buffer offsets break on every game patch. The fix is to find what you
++need at runtime and *validate* it, as described in the roadmap: locate a
++view-projection matrix by its behaviour — does it project a known point into the
++clip volume, does it change smoothly between frames, does the camera position it
++implies track the player? — rather than by where it was last month.
++
++The architectural payoff is already in place: when detection fails, the
++capability graph reports `BLOCKED` with a reason and the features decline to run.
++It does not crash, and it does not run on a matrix it guessed wrong.
++
++The same applies to the pinned provider build. The live-control adapter refuses
++anything that is not the exact verified binary — size, hash, code fingerprints and
++dispatch identity must all match — and falls back to restart-based configuration
++rather than writing to offsets it cannot vouch for.
++
++---
++
++## 8. Diagnosability as a feature
++
++When a closed, authenticated mod ghosts, its user can do nothing but report it.
++They cannot see which input failed, and neither can anyone helping them.
++
++This project already has the machinery to be different: every capability carries
++evidence with a source and a trust level, `ACTIVE` decays when it stops being
++re-proven, and the status page names the root cause once rather than printing a
++cascade.
++
++Extend it in one direction: a **debug visualisation** that renders what the
++generator is actually being handed — the motion buffer, the confidence field, the
++HUD-less capture, and what has been classified as interface. Most ghosting
++complaints resolve in seconds when you can see that the motion buffer is black
++where a vehicle is.
++
++That is a real advantage over any closed solution, and it costs a day of work.
++
++---
++
++## 9. What "ghosting-free" honestly means
++
++It does not mean artifact-free, and claiming otherwise would repeat exactly the
++mistake this project exists to avoid.
++
++**Removable by correct engineering:**
++
++- smearing on vehicles and pedestrians → per-object motion (Stage 5)
++- interface smearing and warping → capture and composite separately (Stage 3)
++- ghosting during menus and loading → suspend generation (already implemented)
++- trails from wrong motion → validation and fallback (section 2)
++
++**Fundamental, and manageable rather than removable:**
++
++- **Disocclusion.** What was hidden last frame has no history. DLSS handles it,
++  imperfectly, by construction.
++- **Transparency.** Glass, particles, rain and alpha-tested foliage have no
++  single depth or motion. This is what the reactive mask exists for; it reduces
++  the artifact, it does not delete it.
++- **Very fast motion.** Beyond some velocity there is not enough correlation
++  between frames to reconstruct from.
++
++An honest claim is: *no structural ghosting — every artifact that remains is one
++the underlying technique cannot remove, and the interface can show you which one
++you are looking at.*
++
++That is a stronger position than "ghosting-free", because it is true, and because
++it is checkable.
++
++---
++
++## 10. Order of attack
++
++The sequencing in `ROADMAP.md` still holds, with the additions from this document
++folded in:
++
++| Stage | Adds | Why this order |
++|---|---|---|
++| 1 | camera constants, detected at runtime | everything depends on it |
++| 2 | reprojected motion — **the base layer** | image pass improves immediately; failing-closed foundation |
++| 2b | motion validation + confidence field | makes every later stage debuggable |
++| 3 | HUD-less, UI layer, **NUI separation** | highest value per hour on an RP server |
++| 4 | D3D11↔D3D12 interop, DLSS-G | generator runs at all |
++| 5 | per-object motion for movers only | removes structural ghosting; unlocks NR+FG together |
++| 6 | upscaling, with the game's TAA disabled | most invasive, least certain payoff |
++
++The reordering that matters: **stage 2 before anything about the generator.**
++Not because it is easier, but because it changes what a failure costs for every
++stage after it. Building the fallback first is what lets stage 5 be a quality
++improvement instead of a correctness requirement.
++
++---
++
++## 11. The question that decides whether any of this is worth it
++
++Unchanged from the roadmap, and it is not a technical question:
++
++> On the servers I actually play, is a full add-on ReShade stack with patched
++> shaders permitted?
++
++Stages 2 through 6 are exactly the class of client modification that Pure Mode
++and server anticheat exist to block. A better architecture does not change that,
++and neither will a better implementation.
++
++Measure before committing, too. GTA V on a populated RP server is frequently
++CPU-bound, and upscaling helps only when you are GPU-bound. Stage 6 is months of
++the most invasive work in this document; find out first whether it would move
++your frame rate at all.
+diff --git a/v3/docs/ROADMAP.md b/v3/docs/ROADMAP.md
+new file mode 100644
+index 0000000..3f3bdcc
+--- /dev/null
++++ b/v3/docs/ROADMAP.md
+@@ -0,0 +1,638 @@
++# SECRET EMKO — Roadmap to Upscaling, Frame Generation and Neural Rendering together
++
++## The short version
++
++All three features want the same thing, and GTA V Legacy does not produce it:
++
++```
++                    ┌─────────────────────────────┐
++                    │  geometry motion vectors    │
++                    │  + depth                    │
++                    │  + camera constants         │
++                    │  + HUD-less colour / UI     │
++                    └──────────────┬──────────────┘
++                                   │
++              ┌────────────────────┼────────────────────┐
++              ▼                    ▼                    ▼
++        Neural Rendering    Frame Generation      Upscaling
++```
++
++There is no shortcut where one of them arrives early on its own. Build the
++inputs, and all three become reachable. That is why this document is a single
++chain rather than three parallel efforts.
++
++Two constraints shape everything below.
++
++**GTA V does not output motion vectors.** The engine never had a use for them.
++They have to be either reconstructed from depth (exact for the camera, wrong for
++anything that moves on its own) or injected into the game's own shaders (correct,
++and most of the work in this document).
++
++**DLSS Frame Generation does not run on D3D11.** Streamline requires D3D12 or
++Vulkan for DLSS-G; GTA V Legacy is D3D11. The way this is solved in practice is a
++D3D11↔D3D12 interop layer: a second D3D12 device, resources shared through NT
++handles, synchronisation through shared fences, and the generator running on the
++D3D12 side. This is a substantial piece of engineering in its own right and it
++sits on the critical path for frame generation only.
++
++---
++
++## Stage 0 — where the code is now
++
++Shipped in v3:
++
++- shader classification that accumulates across sessions (`SecretEMKO-FG.candidates.txt`)
++- a base-frame limiter that owns pacing
++- the capability graph, arbitration and fail-closed status that the stages below
++  plug into without rework
++
++The capability nodes `ShaderMotion`, `DepthInput`, `HudlessColor`, `UiLayer`,
++`FrameConstants` and `PresentControl` already exist, already gate the interface,
++and are already wired to the provider's status flags. Each stage below lights one
++or more of them up; nothing in `core/` has to change to accommodate that.
++
++---
++
++## Stage 1 — Camera constants
++
++**Goal.** Know the view and projection matrices for the current and previous
++frame, aligned to the presented frame.
++
++**How.** GTA uploads its per-frame constants through buffer maps. In the ReShade
++add-on API the practical hooks are `map_buffer_region` / `unmap_buffer_region`
++plus the descriptor binding events; you watch constant-buffer-sized writes and
++look for a 4×4 float matrix that behaves like a view-projection matrix.
++
++Identifying it at runtime rather than hard-coding an offset is worth the effort —
++offsets move with every game patch. A detector that works:
++
++1. treat every 64-byte-aligned float block in the buffer as a candidate
++2. project a point that must be on screen (the origin of camera space) and check
++   `w > 0` and `x/w, y/w` inside the clip volume
++3. require temporal continuity — a real view-projection matrix changes smoothly
++   between frames, a coincidental float pattern does not
++4. cross-check by reconstructing the camera position and confirming it moves when
++   the player moves
++
++**Ships.** Nothing visible. `FrameConstants` reaches `READY`.
++
++**Verification.** Log the reconstructed camera position and compare it against
++in-game movement. If it tracks, the matrix is right.
++
++**Effort.** Days, not weeks. This is the cheapest stage and everything else
++depends on it.
++
++---
++
++## Stage 2 — Depth, and motion reconstructed from it
++
++**Goal.** A dense motion vector buffer that is exactly correct for camera
++movement.
++
++**How.** Find the scene depth buffer (ReShade's own depth detection heuristics
++apply: the depth-stencil view with the most draws at backbuffer aspect ratio).
++Determine the depth convention empirically — sample near and far geometry and see
++which end is which, rather than assuming; GTA's convention should be confirmed on
++the actual build you target, not taken from documentation.
++
++Then, in a compute shader, per pixel:
++
++```
++depth  →  unproject with inverse(viewProj_now)   →  world position
++world  →  project with viewProj_previous          →  previous screen position
++motion =  previous_uv − current_uv
++```
++
++Write to an `R16G16_FLOAT` target.
++
++**What this gets right and wrong.** It is *exact* for everything static, which in
++a driving game is most of the screen most of the time. It is *wrong* for anything
++that moves under its own power — vehicles, pedestrians, animated props — because
++reprojection treats them as part of the static world. Those objects will ghost.
++
++That trade is acceptable here for one reason: it is the foundation Stage 5 builds
++on, and it is the first time the neural pass runs on real motion rather than
++estimated motion.
++
++**A hybrid worth considering.** Reprojected motion and the existing optical-flow
++path fail in opposite places. Reprojection is exact for the camera and blind to
++independent movement; optical flow sees independent movement but guesses
++everything. Using reprojection as the base and optical flow only as a residual
++where the two disagree is a real option, and it is cheaper than Stage 5.
++
++**Required code change.** The provider currently publishes one
++`kProviderGeometryMotion` flag. Split it:
++
++```cpp
++kProviderCameraMotion    // reprojected from depth — exact for the camera
++kProviderGeometryMotion  // per-object — correct for moving objects too
++```
++
++Arbitration must keep treating camera-only motion as **insufficient for frame
++generation**. Neural rendering may use it; the generator may not. That preserves
++the fail-closed promise rather than quietly lowering the bar.
++
++**Ships.** Neural rendering on real camera motion. `DepthInput` reaches `READY`,
++`CameraMotion` reaches `READY`.
++
++**Effort.** Weeks.
++
++---
++
++## Stage 3 — HUD-less colour and the interface layer
++
++**Goal.** The scene image before the interface is drawn, and the interface on its
++own.
++
++**How.** Find the end-of-scene point: the last draw with depth bound before the
++run of interface draws. The candidate file the provider has been accumulating
++since Stage 0 is exactly the data for this — interface draws cluster as
++no-depth, alpha-blended, with orthographic projection in their constant buffer.
++
++Copy the render target at that point into a persistent texture. For the interface
++layer, either capture it into a cleared target of its own, or reconstruct alpha by
++differencing the final image against the HUD-less copy.
++
++**Ships.** Interface protection that actually does something. `HudlessColor` and
++`UiLayer` reach `READY`. Also immediately useful to neural rendering: the pass
++stops touching the map, chat and menus.
++
++**Effort.** Weeks. Mostly experimentation — this is the stage where the
++accumulated classification pays for itself.
++
++---
++
++## Stage 4 — D3D11 ↔ D3D12 interop, then DLSS-G
++
++**Goal.** Run the generator at all.
++
++**How.**
++
++1. Create a D3D12 device on the same adapter.
++2. Create the textures that have to cross the boundary as D3D11 resources with
++   `D3D11_RESOURCE_MISC_SHARED_NTHANDLE`, get a handle through
++   `IDXGIResource1::CreateSharedHandle`, open it on the D3D12 side.
++3. Synchronise with a shared fence (`ID3D11Device5::CreateFence` with the shared
++   flag, opened on D3D12). Do not use queries or flush-and-pray; the failure mode
++   is a torn frame that is very hard to attribute.
++4. Tag depth, motion, HUD-less colour and UI through Streamline, set the camera
++   constants, evaluate DLSS-G on the D3D12 queue.
++5. Present from whichever side owns the swap chain, and handle device loss on
++   both sides without freezing the presented image.
++
++**The risk.** This is the stage most likely to produce crashes that are hard to
++diagnose, because a synchronisation bug shows up as corruption several frames
++later. Budget time for building a deterministic repro harness before building the
++feature.
++
++**Ships.** Frame generation 2x/3x — with visible ghosting on vehicles and
++pedestrians, because Stage 5 has not happened yet. Whether to ship that state to
++users or keep it behind the expert unlock is a judgement call; the honest answer
++is to keep it locked until Stage 5, which is what the current arbitration already
++does.
++
++**Effort.** Weeks to months.
++
++---
++
++## Stage 5 — Per-object motion vectors
++
