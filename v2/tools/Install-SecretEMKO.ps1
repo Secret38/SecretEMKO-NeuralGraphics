@@ -19,7 +19,7 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ((Split-Path -Leaf $Root) -ieq "tools") { $Root = Split-Path -Parent $Root }
 
 $Product = "SECRET EMKO Neural Graphics"
-$Version = "2.0.0-rc5"
+$Version = "2.0.0-rc5.1"
 $Cache = Join-Path $env:LOCALAPPDATA "SecretEMKO\cache"
 $GlobalStateRoot = Join-Path $env:LOCALAPPDATA "SecretEMKO\state"
 $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -42,7 +42,7 @@ $RenoDXAddonHash = "D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C859
 function Banner {
     Write-Host ""
     Write-Host "================================================================" -ForegroundColor DarkGray
-    Write-Host " SECRET EMKO  //  NEURAL GRAPHICS v2 RC5" -ForegroundColor Cyan
+    Write-Host " SECRET EMKO  //  NEURAL GRAPHICS v2 RC5.1.1" -ForegroundColor Cyan
     Write-Host " Universal FiveM Legacy installer  |  isolated + reversible" -ForegroundColor Gray
     Write-Host "================================================================" -ForegroundColor DarkGray
     Write-Host ""
@@ -196,7 +196,7 @@ function Resolve-FiveMAppPath {
 
     $enhancedConfig = Join-Path $env:APPDATA "FiveM for GTAV Enhanced\config.toml"
     if (Test-Path -LiteralPath $enhancedConfig) {
-        throw "Only FiveM for GTAV Enhanced was detected. SECRET EMKO v2 RC5 currently targets FiveM GTA V Legacy and will not install into Enhanced."
+        throw "Only FiveM for GTAV Enhanced was detected. SECRET EMKO v2 RC5.1.1 currently targets FiveM GTA V Legacy and will not install into Enhanced."
     }
 
     throw "FiveM Legacy was not found. Start FiveM Legacy once, or run the installer with -FiveMPath <path-to-FiveM.exe>."
@@ -643,22 +643,24 @@ if ($neuralMode) {
         (Join-Path $Root "BUILD-MANIFEST.json"),
         (Join-Path $Root "SecretEMKO.addon64"),
         (Join-Path $Root "SecretEMKO-FG.addon64"),
-        (Join-Path $Root "dlss5-bridge.addon64")
+        (Join-Path $Root "dlss5-bridge.addon64"),
+        (Join-Path $Root "offline\reshade-shaders"),
+        (Join-Path $Root "offline\swapchain_override.addon64")
     )
     $missingPackageFiles = @($requiredPackageFiles | Where-Object { -not (Test-Path -LiteralPath $_) })
     if ($missingPackageFiles.Count -gt 0) {
         Write-Host ""
         Write-Host "FULL NEURAL PACKAGE PRECHECK FAILED" -ForegroundColor Red
-        Write-Host "This folder is a source checkout/source ZIP, not the built SECRET EMKO RC5 package." -ForegroundColor Yellow
+        Write-Host "This folder is a source checkout/source ZIP, not the built SECRET EMKO RC5.1 package." -ForegroundColor Yellow
         Write-Host "Do not use GitHub 'Code -> Download ZIP' for Full Neural." -ForegroundColor Yellow
         Write-Host "Download the successful GitHub Actions artifact named:" -ForegroundColor Yellow
-        Write-Host "  SecretEMKO-NeuralGraphics-v2.0.0-rc5" -ForegroundColor Cyan
+        Write-Host "  SecretEMKO-NeuralGraphics-v2.0.0-rc5.1" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "Missing packaged files:" -ForegroundColor Gray
         foreach ($missingFile in $missingPackageFiles) {
             Write-Host ("  - " + (Split-Path -Leaf $missingFile)) -ForegroundColor Gray
         }
-        throw "Full Neural requires the built RC5 artifact. No FiveM plugins have been modified by this precheck."
+        throw "Full Neural requires the built RC5.1 artifact. No FiveM plugins have been modified by this precheck."
     }
 }
 
@@ -912,7 +914,7 @@ try {
             Copy-Item -LiteralPath (Join-Path $Root "config\dlss5-bridge.cfg") -Destination $bridgeCfg -Force
         }
         [void]$managed.Add("dlss5-bridge.cfg")
-        Ok "Persisted Neural/Bridge state preserved; missing keys received RC5 defaults"
+        Ok "Persisted Neural/Bridge state preserved; missing keys received RC5.1 defaults"
     }
     else {
         Step "Configuring RP Visual mode"
@@ -926,10 +928,21 @@ try {
         throw "Missing integrated ReShade updater: $reshadeContentTool"
     }
     if ($neuralMode) {
-        & $reshadeContentTool -TargetDirectory $PluginsPath -Architecture 64
+        $offlinePayload = Join-Path $Root "offline"
+        if ((Test-Path -LiteralPath (Join-Path $offlinePayload "reshade-shaders")) -and
+            (Test-Path -LiteralPath (Join-Path $offlinePayload "swapchain_override.addon64"))) {
+            & $reshadeContentTool -TargetDirectory $PluginsPath -Architecture 64 -Offline
+            Ok "ReShade content installed from the bundled offline payload; no GitHub request was required"
+        }
+        else {
+            Warn "Bundled ReShade payload is missing; falling back to resilient online content update."
+            & $reshadeContentTool -TargetDirectory $PluginsPath -Architecture 64
+        }
         if (-not $managed.Contains("swapchain_override.addon64")) { [void]$managed.Add("swapchain_override.addon64") }
     }
     else {
+        # RP Visual may be built from source, so retain the online updater there.
+        # The downloader itself has retry + curl fallback in RC5.1.
         & $reshadeContentTool -TargetDirectory $PluginsPath -Architecture 64 -SkipAddon -SkipCoreCheck
     }
     Ok "ReShade Main/Stream content updated"
