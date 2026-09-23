@@ -20,7 +20,7 @@ NIGos/dlss5-bridge
 Copyright (c) 2026 NIGos and contributors  
 License: MIT.
 
-RC4 pins the official upstream prerelease `v1.4.13-pre8` (commit `ecd1b00674020a1e8c76a9cb653a1a21d11676a0`, asset SHA-256 `C4C8B5BC4B26B2B3F3BF2767CDB708546D62F7D0BBB63D24E940C736DA9EFE26`). This build is used specifically for its internal NVIDIA Optical Flow synthetic-input path and its MinHook/lifecycle fixes. It remains an upstream prerelease rather than being represented as a stable release.
+RC5 pins the official upstream prerelease `v1.4.13-pre8` (commit `ecd1b00674020a1e8c76a9cb653a1a21d11676a0`, asset SHA-256 `C4C8B5BC4B26B2B3F3BF2767CDB708546D62F7D0BBB63D24E940C736DA9EFE26`). This build is used specifically for its internal NVIDIA Optical Flow synthetic-input path and its MinHook/lifecycle fixes. It remains an upstream prerelease rather than being represented as a stable release.
 
 The pinned bridge binary is obtained from its official GitHub prerelease during the release build, SHA-256 verified, and may be included with this package under its MIT license.
 
@@ -35,7 +35,7 @@ SECRET EMKO v2 contains no PureDark proprietary source, authentication bypass, P
 
 
 ## DLSS5-Swapper live-control adapter provenance
-The RC4 RenoDX live-control adapter is derived from the MIT-licensed, hash-pinned RenoDX v4.7 UI bridge in `rakanki911/DLSS5-Swapper` (commit `24bd2aca7a7451ce94e564366381e33cac9dcdba`).  
+The RC5 RenoDX live-control adapter is derived from the MIT-licensed, hash-pinned RenoDX v4.7 UI bridge in `rakanki911/DLSS5-Swapper` (commit `24bd2aca7a7451ce94e564366381e33cac9dcdba`).  
 Copyright (c) 2026 Rakan Alkhaldi  
 License: MIT.
 
