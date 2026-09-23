@@ -4,8 +4,7 @@ on:
   push:
     branches: [ v3-17-alpha1-player-test ]
     paths:
-      - ".source-patch/**"
-  workflow_dispatch:
+      - ".source-patch/READY"
 
 permissions:
   contents: write
