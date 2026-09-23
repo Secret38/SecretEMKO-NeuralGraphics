@@ -31,7 +31,7 @@
 namespace {
 
 constexpr const char* kProduct = "SECRET EMKO Neural Graphics";
-constexpr const char* kVersion = "2.0.0-rc5";
+constexpr const char* kVersion = "2.0.0-rc5.1";
 constexpr const char* kProviderSection = "RenoDX.DLSS5";
 constexpr const char* kOwnSection = "SecretEMKO";
 
@@ -1024,7 +1024,7 @@ void DrawHeader() {
   ImGui::BeginChild("##se_header", ImVec2(0, 72), true);
   ImGui::TextUnformatted("SECRET EMKO");
   ImGui::SameLine();
-  ImGui::TextDisabled("NEURAL GRAPHICS  /  RC5");
+  ImGui::TextDisabled("NEURAL GRAPHICS  /  RC5.1");
   ImGui::TextDisabled("FiveM GTA V Legacy");
 
   const char* neural = !NeuralStackInstalled() ? "VISUAL"

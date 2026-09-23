@@ -8,7 +8,8 @@ param(
     [switch]$SkipPresets,
     [switch]$SkipCoreCheck,
     [switch]$DryRun,
-    [switch]$RequireAllEffects
+    [switch]$RequireAllEffects,
+    [switch]$Offline
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,6 +23,7 @@ $ConfigRoot = Join-Path $PackageRoot "config"
 $MainPreset = Join-Path $PresetRoot "Secret_Emko_Main.ini"
 $StreamPreset = Join-Path $PresetRoot "Secret_Emko_Stream.ini"
 $TemplateIni = Join-Path $ConfigRoot "ReShade.SecretEMKO.ini"
+$BundledRoot = Join-Path $PackageRoot "offline"
 
 $EffectCatalogUrl = "https://raw.githubusercontent.com/crosire/reshade-shaders/list/EffectPackages.ini"
 $AddonCatalogUrl = "https://raw.githubusercontent.com/crosire/reshade-shaders/list/Addons.ini"
@@ -44,9 +46,75 @@ function Ensure-Folder([string]$Path) {
     }
 }
 
+function Invoke-WithRetry([scriptblock]$Action, [string]$Label, [int]$Attempts = 5) {
+    $last = $null
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            return & $Action
+        }
+        catch {
+            $last = $_
+            if ($attempt -lt $Attempts) {
+                $delay = [Math]::Min(12, [Math]::Pow(2, $attempt - 1))
+                Warn ("$Label failed (attempt $attempt/$Attempts): " + $_.Exception.Message + "; retrying in $delay s")
+                Start-Sleep -Seconds $delay
+            }
+        }
+    }
+    throw $last
+}
+
 function Invoke-Download([string]$Url, [string]$OutFile) {
     Ensure-Folder (Split-Path -Parent $OutFile)
-    Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $OutFile -Headers @{ "User-Agent" = "SecretEMKO-v2" }
+    $partial = $OutFile + ".partial"
+    Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
+
+    try {
+        Invoke-WithRetry {
+            Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $partial -Headers @{ "User-Agent" = "SecretEMKO-v2" } -TimeoutSec 60
+            if (-not (Test-Path -LiteralPath $partial) -or (Get-Item -LiteralPath $partial).Length -le 0) {
+                throw "Download produced an empty file."
+            }
+        } ("Download " + $Url)
+    }
+    catch {
+        Warn ("PowerShell download path failed; trying Windows curl.exe: " + $_.Exception.Message)
+        $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+        if (-not $curl) { throw }
+        & $curl.Source -fL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 -A "SecretEMKO-v2" -o $partial $Url
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $partial) -or (Get-Item -LiteralPath $partial).Length -le 0) {
+            Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
+            throw "Download failed through both Invoke-WebRequest and curl.exe: $Url"
+        }
+    }
+
+    Move-Item -LiteralPath $partial -Destination $OutFile -Force
+}
+
+function Invoke-WebText([string]$Url) {
+    try {
+        return Invoke-WithRetry {
+            $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -Headers @{ "User-Agent" = "SecretEMKO-v2" } -TimeoutSec 60
+            if (-not $response.Content) { throw "Response was empty." }
+            return [string]$response.Content
+        } ("Request " + $Url)
+    }
+    catch {
+        Warn ("PowerShell request path failed; trying Windows curl.exe: " + $_.Exception.Message)
+        $temp = Join-Path ([IO.Path]::GetTempPath()) ("SecretEMKO-web-" + [guid]::NewGuid().ToString("N") + ".tmp")
+        try {
+            $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+            if (-not $curl) { throw }
+            & $curl.Source -fL --retry 5 --retry-all-errors --retry-delay 2 --connect-timeout 20 -A "SecretEMKO-v2" -o $temp $Url
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $temp)) {
+                throw "Request failed through both Invoke-WebRequest and curl.exe: $Url"
+            }
+            return [IO.File]::ReadAllText($temp)
+        }
+        finally {
+            Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Parse-Catalog([string]$Text) {
@@ -82,8 +150,8 @@ function Get-PresetEffects([string[]]$PresetPaths) {
 }
 
 function Get-LatestReShadeAddonSetup {
-    $landingPage = Invoke-WebRequest -UseBasicParsing -Uri "https://reshade.me/" -Headers @{ "User-Agent" = "SecretEMKO-v2" }
-    if ($landingPage.Content -notmatch 'Version\s+([0-9]+\.[0-9]+\.[0-9]+)') {
+    $landingPage = Invoke-WebText "https://reshade.me/"
+    if ($landingPage -notmatch 'Version\s+([0-9]+\.[0-9]+\.[0-9]+)') {
         throw "Could not resolve the current ReShade version from reshade.me."
     }
     $version = $Matches[1]
@@ -335,7 +403,7 @@ function Disable-MissingPresetTechniques([string]$Path, [string[]]$MissingEffect
 }
 
 function Install-SwapchainOverride([string]$Target, [string]$Arch) {
-    $catalogText = (Invoke-WebRequest -UseBasicParsing -Uri $AddonCatalogUrl -Headers @{ "User-Agent" = "SecretEMKO-v2" }).Content
+    $catalogText = Invoke-WebText $AddonCatalogUrl
     $addons = Parse-Catalog $catalogText
     $swap = $addons | Where-Object {
         ($_.PSObject.Properties.Name -contains "RepositoryUrl" -and $_.RepositoryUrl -match '16-swapchain_override') -or
@@ -358,6 +426,49 @@ function Install-SwapchainOverride([string]$Target, [string]$Arch) {
     return $url
 }
 
+function Install-BundledContent([string]$Target, [string]$Arch) {
+    Step "Using bundled ReShade content (offline-safe install; no GitHub request required)"
+
+    if (-not $SkipShaders) {
+        $source = Join-Path $BundledRoot "reshade-shaders"
+        if (-not (Test-Path -LiteralPath $source)) {
+            throw "Bundled ReShade shader payload is missing: $source"
+        }
+        Copy-TreeContents $source (Join-Path $Target "reshade-shaders")
+        Ok "Bundled shader payload installed"
+    }
+
+    if (-not $SkipPresets) {
+        Install-PresetsAndConfig $Target
+    }
+
+    $addonSource = $null
+    if (-not $SkipAddon) {
+        $addonName = if ($Arch -eq "64") { "swapchain_override.addon64" } else { "swapchain_override.addon32" }
+        $addonSource = Join-Path $BundledRoot $addonName
+        if (-not (Test-Path -LiteralPath $addonSource)) {
+            throw "Bundled ReShade add-on is missing: $addonName"
+        }
+        Copy-Item -LiteralPath $addonSource -Destination (Join-Path $Target $addonName) -Force
+        Ok "$addonName installed from verified release bundle"
+    }
+
+    $stateDir = Join-Path $Target "SecretEMKO"
+    Ensure-Folder $stateDir
+    $state = [ordered]@{
+        updated_at = (Get-Date).ToUniversalTime().ToString("o")
+        mode = "bundled-offline"
+        network_required = $false
+        default_preset = "Secret_Emko_Main.ini"
+        stream_preset = "Secret_Emko_Stream.ini"
+        bundled_root = $BundledRoot
+        swapchain_override_source = if ($addonSource) { "release-bundle" } else { $null }
+    }
+    $state | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $stateDir "reshade-content-state.json") -Encoding UTF8
+    Write-Host ""
+    Write-Host "ReShade bundled content integration complete." -ForegroundColor Green
+}
+
 $TargetDirectory = [IO.Path]::GetFullPath($TargetDirectory)
 Ensure-Folder $TargetDirectory
 
@@ -365,8 +476,13 @@ if (-not $SkipCoreCheck) {
     Ensure-ReShadeFullAddon $TargetDirectory
 }
 
+if ($Offline) {
+    Install-BundledContent $TargetDirectory $Architecture
+    exit 0
+}
+
 $effects = Get-PresetEffects @($MainPreset, $StreamPreset)
-$catalog = (Invoke-WebRequest -UseBasicParsing -Uri $EffectCatalogUrl -Headers @{ "User-Agent" = "SecretEMKO-v2" }).Content
+$catalog = Invoke-WebText $EffectCatalogUrl
 $packages = Parse-Catalog $catalog
 $selection = Find-SelectedPackages $packages $effects
 

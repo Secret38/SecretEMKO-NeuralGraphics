@@ -98,7 +98,7 @@ jobs:
           }
           catch {
             $failed = $true
-            if ($_.Exception.Message -notmatch "built RC5 artifact") { throw }
+            if ($_.Exception.Message -notmatch "built RC5.1 artifact") { throw }
           }
 
           if (-not $failed) { throw "Source tree unexpectedly accepted Full Neural." }
@@ -198,7 +198,7 @@ jobs:
       - name: Verify release files
         shell: powershell
         run: |
-          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc5"
+          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc5.1"
           $required = @(
             "SecretEMKO.addon64",
             "SecretEMKO-FG.addon64",
@@ -209,6 +209,8 @@ jobs:
             "tools\Install-SecretEMKO.ps1",
             "tools\Uninstall-SecretEMKO.ps1",
             "tools\Update-ReShadeContent.ps1",
+            "offline\swapchain_override.addon64",
+            "offline\reshade-shaders\Shaders",
             "config\ReShade.SecretEMKO.ini",
             "presets\Secret_Emko_Main.ini",
             "presets\Secret_Emko_Stream.ini",
@@ -227,8 +229,18 @@ jobs:
           Get-FileHash "$stage\SecretEMKO-FG.addon64" -Algorithm SHA256
           Get-FileHash "$stage\dlss5-bridge.addon64" -Algorithm SHA256
 
+          $offlineShaderCount = @(Get-ChildItem "$stage\offline\reshade-shaders\Shaders" -Recurse -File -Filter "*.fx" -ErrorAction Stop).Count
+          if ($offlineShaderCount -lt 1) { throw "Offline ReShade payload contains no .fx shaders" }
+
+          $offlineTest = Join-Path $env:RUNNER_TEMP "SecretEMKO Offline ReShade Test"
+          New-Item -ItemType Directory -Path $offlineTest -Force | Out-Null
+          Copy-Item "$stage\config\ReShade.SecretEMKO.ini" (Join-Path $offlineTest "ReShade.ini") -Force
+          & "$stage\tools\Update-ReShadeContent.ps1" -TargetDirectory $offlineTest -Architecture 64 -Offline -SkipCoreCheck
+          if (-not (Test-Path (Join-Path $offlineTest "swapchain_override.addon64"))) { throw "Offline updater did not install swapchain override" }
+          if (@(Get-ChildItem (Join-Path $offlineTest "reshade-shaders\Shaders") -Recurse -File -Filter "*.fx").Count -lt 1) { throw "Offline updater did not install shaders" }
+
           $versions = Get-Content ".\v2\VERSIONS.json" -Raw | ConvertFrom-Json
-          if ($versions.version -ne "2.0.0-rc5") { throw "VERSIONS.json is not RC5" }
+          if ($versions.version -ne "2.0.0-rc5.1") { throw "VERSIONS.json is not RC5.1" }
           if ($versions.components.dlss5_bridge.version -ne "1.4.13-pre8") { throw "Wrong bridge version" }
           $expectedBridge = "C4C8B5BC4B26B2B3F3BF2767CDB708546D62F7D0BBB63D24E940C736DA9EFE26"
           $actualBridge = (Get-FileHash "$stage\dlss5-bridge.addon64" -Algorithm SHA256).Hash
@@ -268,7 +280,7 @@ jobs:
       - name: End-to-end Full Neural state persistence test
         shell: powershell
         run: |
-          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc5").Path
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc5.1").Path
           $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Full Neural Persistence Test"
           $app = Join-Path $fake "FiveM.app"
           New-Item -ItemType Directory -Path $app -Force | Out-Null
@@ -331,7 +343,7 @@ jobs:
       - name: End-to-end RP Visual isolation and restore test
         shell: powershell
         run: |
-          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc5").Path
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc5.1").Path
           $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO FiveM Legacy Test"
           $app = Join-Path $fake "FiveM.app"
           $oldPlugins = Join-Path $app "plugins"
@@ -375,7 +387,7 @@ jobs:
       - name: End-to-end missing plugins creation test
         shell: powershell
         run: |
-          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc5").Path
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc5.1").Path
           $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Missing Plugins Test"
           $app = Join-Path $fake "FiveM.app"
           New-Item -ItemType Directory -Path $app -Force | Out-Null
@@ -397,7 +409,7 @@ jobs:
       - name: Reject unsupported Full Neural hardware before modification
         shell: powershell
         run: |
-          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc5").Path
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc5.1").Path
           $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Unsupported Neural Test"
           $app = Join-Path $fake "FiveM.app"
           $plugins = Join-Path $app "plugins"
@@ -419,8 +431,8 @@ jobs:
       - name: Upload v2 package
         uses: actions/upload-artifact@v4
         with:
-          name: SecretEMKO-NeuralGraphics-v2.0.0-rc5
+          name: SecretEMKO-NeuralGraphics-v2.0.0-rc5.1
           path: |
-            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc5/**
-            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc5.zip
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc5.1/**
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc5.1.zip
           if-no-files-found: error

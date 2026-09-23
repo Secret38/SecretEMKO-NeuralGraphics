@@ -1,10 +1,10 @@
-# SECRET EMKO Neural Graphics v2 RC5
+# SECRET EMKO Neural Graphics v2 RC5.1
 
 RC5 is the hardened **FiveM GTA V Legacy x64** distribution. The key change is that "portable for RP players" is no longer treated as the same thing as "force the Full Add-on neural stack everywhere."
 
 ## Install
 
-> **Do not use GitHub `Code -> Download ZIP` for Full Neural.** The source archive does not contain the compiled `SecretEMKO.addon64` or packaged bridge. Download the successful GitHub Actions artifact `SecretEMKO-NeuralGraphics-v2.0.0-rc5`, extract it completely, and run the installer from that extracted package.
+> **Do not use GitHub `Code -> Download ZIP` for Full Neural.** The source archive does not contain the compiled `SecretEMKO.addon64` or packaged bridge. Download the successful GitHub Actions artifact `SecretEMKO-NeuralGraphics-v2.0.0-rc5.1`, extract it completely, and run the installer from that extracted package.
 
 For normal FiveM RP use, double-click:
 
@@ -85,3 +85,7 @@ See `COMPATIBILITY.md` for the detailed matrix and recovery behavior.
 Normal users should not have to understand RenoDX parameters, optical-flow grids or Streamline resource tags. RC5 therefore uses **Natural / Cinematic / Detail** as the three visible looks and a single realtime **Strength 0.00–2.00** control. Advanced exposes the lower-level provider/bridge pages for diagnostics only.
 
 The Frame Gen page is intentionally designed before the provider is unlocked: Off/2x/3x, automatic base FPS (or one manual base-FPS slider), HUD Protection, and automatic pause. It only unlocks when the dedicated native provider `SecretEMKO-FG.addon64` is both installed and loaded. The provider target is shader-injected GTA motion, matching depth, HUD-less scene color, separate UI data, frame constants and present/pacing control. Optical Flow is not accepted as the production Frame Generation input route. See `FRAMEGEN-NATIVE.md`.
+
+## RC5.1 installer reliability hotfix
+
+Built Full Neural packages now carry the required ReShade shader payload and `swapchain_override.addon64` inside the release artifact. The normal Full Neural install uses that bundled payload and does not contact GitHub for ReShade content. The online updater remains only as a fallback and now retries transient HTTP/TLS failures with exponential backoff plus a `curl.exe` fallback.

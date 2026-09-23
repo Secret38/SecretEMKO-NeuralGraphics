@@ -1,4 +1,4 @@
-# SECRET EMKO v2 RC5 — Compatibility
+# SECRET EMKO v2 RC5.1 — Compatibility
 
 ## Target
 
@@ -97,3 +97,7 @@ RC5 deliberately separates **soft-disable now** from **do not load next start**.
 ## RC5 Frame Generation boundary
 
 RC5 includes the user-facing Frame Generation contract but does not pretend the native provider already exists. A functional provider must expose geometry-derived dense motion vectors, matching depth, HUD-less scene color and UI data, plus frame-aligned camera constants and swap-chain/pacing control. The UI stays locked until `SecretEMKO-FG.addon64` is present and loaded. Optical Flow may remain a Neural Rendering fallback, but it is not the production Frame Generation design.
+
+## RC5.1 installer reliability hotfix
+
+Built Full Neural packages now carry the required ReShade shader payload and `swapchain_override.addon64` inside the release artifact. The normal Full Neural install uses that bundled payload and does not contact GitHub for ReShade content. The online updater remains only as a fallback and now retries transient HTTP/TLS failures with exponential backoff plus a `curl.exe` fallback.
