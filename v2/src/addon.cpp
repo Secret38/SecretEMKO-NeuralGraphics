@@ -293,6 +293,20 @@ int ParseInt(const std::unordered_map<std::string, std::string>& map, const char
 }
 
 void WriteBridgeConfig(bool force_off = false) {
+  // Desired state lives in ReShade.ini. The bridge cfg is the operational
+  // projection and may temporarily contain source=off while Neural is asleep.
+  WriteConfig(kOwnSection, "BridgeSynth", g_bridge.synth);
+  WriteConfig(kOwnSection, "BridgeSource", g_bridge.source);
+  WriteConfig(kOwnSection, "BridgeOfaGrid", g_bridge.ofa_grid);
+  WriteConfig(kOwnSection, "BridgeOfaPerf", g_bridge.ofa_perf);
+  WriteConfig(kOwnSection, "BridgeStage", g_bridge.stage);
+  WriteConfig(kOwnSection, "BridgeMode", g_bridge.mode);
+  WriteConfig(kOwnSection, "BridgeSkipGame", g_bridge.skip_game);
+  WriteConfig(kOwnSection, "BridgeDred", g_bridge.dred);
+  WriteConfig(kOwnSection, "BridgeSkipExe", g_bridge.skip_exe);
+  WriteConfig(kOwnSection, "BridgeUnwrap", g_bridge.unwrap);
+  WriteConfig(kOwnSection, "BridgeHashOut", g_bridge.hash_out);
+
   std::ofstream out(BridgeConfigPath(), std::ios::trunc);
   if (!out) return;
 
@@ -332,6 +346,21 @@ void LoadBridgeConfig() {
     else if (it->second == "mirror") g_bridge.source = 2;
     else if (it->second == "off") g_bridge.source = 3;
   }
+
+  // RC3 desired-state keys override the operational cfg. This is what lets
+  // source=off persist operationally while Neural is disabled without losing
+  // the user's preferred bridge settings for the next enable.
+  ReadConfig(kOwnSection, "BridgeSynth", g_bridge.synth);
+  ReadConfig(kOwnSection, "BridgeSource", g_bridge.source);
+  ReadConfig(kOwnSection, "BridgeOfaGrid", g_bridge.ofa_grid);
+  ReadConfig(kOwnSection, "BridgeOfaPerf", g_bridge.ofa_perf);
+  ReadConfig(kOwnSection, "BridgeStage", g_bridge.stage);
+  ReadConfig(kOwnSection, "BridgeMode", g_bridge.mode);
+  ReadConfig(kOwnSection, "BridgeSkipGame", g_bridge.skip_game);
+  ReadConfig(kOwnSection, "BridgeDred", g_bridge.dred);
+  ReadConfig(kOwnSection, "BridgeSkipExe", g_bridge.skip_exe);
+  ReadConfig(kOwnSection, "BridgeUnwrap", g_bridge.unwrap);
+  ReadConfig(kOwnSection, "BridgeHashOut", g_bridge.hash_out);
 }
 
 void WriteNeuralSettings() {
@@ -954,6 +983,8 @@ void OnOverlayFrame(reshade::api::effect_runtime* runtime) {
 
   if (!g_policy_synced) {
     SetBackendLoadPolicy(g_nr.enabled != 0);
+    if (g_nr.enabled == 0)
+      WriteBridgeConfig(true);
     g_policy_synced = true;
   }
 }
