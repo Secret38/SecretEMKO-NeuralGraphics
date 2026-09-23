@@ -164,6 +164,16 @@ class RenoDxLiveAdapter {
   }
   const std::string& reason() const { return reason_; }
 
+  void shutdown() {
+    restore_overlay();
+    active_ = false;
+    valid_ = false;
+    module_ = nullptr;
+    checked_module_ = nullptr;
+    original_ = nullptr;
+    reason_ = "RenoDX live control shut down";
+  }
+
  private:
   static constexpr DWORD kRequiredSize = 1732608;
   static constexpr uintptr_t kImGuiSlotOffset = 0x196ca0;
@@ -320,19 +330,31 @@ class RenoDxLiveAdapter {
     original_ = imgui_function_table_instance();
     auto** slot = reinterpret_cast<const imgui_function_table**>(base + kImGuiSlotOffset);
     if (*slot != original_) {
+      restore_overlay();
       active_ = false;
-      reason_ = "RenoDX ImGui dispatch is already replaced by another component";
+      reason_ = "RenoDX ImGui dispatch is already replaced by another component; original RenoDX UI kept available";
       return false;
     }
 
-    if (!overlay_hidden_) {
-      auto callback = reinterpret_cast<void(*)(reshade::api::effect_runtime*)>(
-          base + kOverlayCallbackOffset);
-      reshade::unregister_overlay("RenoDX-DLSSNR", callback);
-      overlay_hidden_ = true;
-    }
-
     return true;
+  }
+
+  void hide_overlay() {
+    if (overlay_hidden_ || !module_ || !valid_) return;
+    auto* base = reinterpret_cast<unsigned char*>(module_);
+    auto callback = reinterpret_cast<void(*)(reshade::api::effect_runtime*)>(
+        base + kOverlayCallbackOffset);
+    reshade::unregister_overlay("RenoDX-DLSSNR", callback);
+    overlay_hidden_ = true;
+  }
+
+  void restore_overlay() {
+    if (!overlay_hidden_ || !module_) return;
+    auto* base = reinterpret_cast<unsigned char*>(module_);
+    auto callback = reinterpret_cast<void(*)(reshade::api::effect_runtime*)>(
+        base + kOverlayCallbackOffset);
+    reshade::register_overlay("RenoDX-DLSSNR", callback);
+    overlay_hidden_ = false;
   }
 
   bool visit(const char* label, Kind kind, float& value, float lo, float hi) {
@@ -529,9 +551,15 @@ class RenoDxLiveAdapter {
 
     active_ = fields_[0].seen && fields_[1].seen && fields_[2].seen;
     if (!active_) {
-      reason_ = "Verified RenoDX v4.70 loaded, but expected live controls were not found";
+      restore_overlay();
+      reason_ = "Verified RenoDX v4.70 loaded, but expected live controls were not found; original RenoDX UI kept available";
       return false;
     }
+
+    // Only hide RenoDX's own page after one successful hidden discovery call.
+    // This guarantees a visible fallback if the adapter cannot prove that it
+    // understands the loaded provider in this session.
+    hide_overlay();
 
     bool any_failed = false;
     for (auto& f : fields_) {
