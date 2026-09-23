@@ -1,6 +1,6 @@
 {
   "product": "SECRET EMKO Neural Graphics",
-  "version": "2.0.0-rc3",
+  "version": "2.0.0-rc4",
   "role": "main-system",
   "installer": {
     "target": "FiveM GTA V Legacy x64",
@@ -64,7 +64,8 @@
   },
   "runtimeCritical": {
     "policy": "pinned and SHA-256 verified until separately validated",
-    "reason": "DLSS/NR/Bridge binary compatibility is more important than blindly following newest assets"
+    "reason": "DLSS/NR/Bridge binary compatibility is more important than blindly following newest assets",
+    "bridge": "DLSS 5 Bridge v1.4.13-pre8 pinned to commit ecd1b00674020a1e8c76a9cb653a1a21d11676a0 and SHA-256 C4C8B5BC4B26B2B3F3BF2767CDB708546D62F7D0BBB63D24E940C736DA9EFE26."
   },
   "runtimeOrchestration": {
     "control_surface": "SECRET EMKO Neural Graphics is the sole intended settings UI",
@@ -86,7 +87,14 @@
       "neural_off_next_start": "ReShade DisabledAddons prevents renodx-dlss5.addon64 and dlss5-bridge.addon64 from being loaded",
       "neural_on_when_loaded": "apply live immediately",
       "neural_on_when_not_loaded": "remove DisabledAddons entries and require one restart so ReShade can load the backends",
-      "runtime_unload": "never FreeLibrary third-party ReShade add-ons mid-session"
+      "runtime_unload": "never FreeLibrary third-party ReShade add-ons mid-session",
+      "neural_runtime_bootstrap": "when Full Neural loads, prepare the DLSS SR runtime for FiveM's dynamic subprocess before the synthetic contract is expected to arm; no manual cache-folder DLL copy is required"
+    },
+    "syntheticFiveM": {
+      "source": "source=synth, synth=1, stage=3, mode=2",
+      "motion_vectors": "ofa_grid 1/2/4 uses DLSS 5 Bridge internal NVIDIA Optical Flow; grid 0 is the explicit external ReShade motion-vector-provider mode.",
+      "sr_runtime": "SECRET EMKO preloads the pinned nvngx_dlss.dll from plugins and relays the same file beside FiveM's dynamic data/cache/subprocess host via hardlink, with copy fallback. It never writes beside unrelated executables.",
+      "runtime_status": "UI distinguishes installed files from ARMED/BLOCKED/ACTIVE runtime state; ACTIVE requires delivered-frame telemetry from the current bridge session."
     }
   }
 }
