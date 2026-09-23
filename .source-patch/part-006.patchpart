@@ -1,0 +1,295 @@
++5. **Anything that locks and then flaps** — the camera, the segmentation
++   boundary — with a note about what was happening on screen.
++
++The first four are bugs. The fifth is tuning, and it is the kind that cannot be
++guessed at from a machine with no GPU.
+diff --git a/v3/docs/INPUT-PIPELINE.md b/v3/docs/INPUT-PIPELINE.md
+new file mode 100644
+index 0000000..9d5f928
+--- /dev/null
++++ b/v3/docs/INPUT-PIPELINE.md
+@@ -0,0 +1,389 @@
++# The complete input pipeline — and where to beat the state of the art
++
++## Scope and honesty about sources
++
++What is publicly known about the existing paid solution in this space: GTA V
++does not output engine motion vectors, and the mod patches a large number of the
++game's shaders to inject them. Its own changelogs describe follow-up fixes for
++cases where vehicles or roads stopped producing correct motion vectors in
++combination with graphics mods such as QuantV and NVE.
++
++Everything in this document about *that* implementation is therefore limited to
++what its authors have stated publicly. The analysis below is about the
++**structural properties of the approach**, which follow from the technique itself
++and are true regardless of how well any particular version implements it. Where
++that distinction matters, it is marked.
++
++It is also possible that some of the weaknesses described here have since been
++addressed in builds this document's author has not seen. The point is not to
++score against another project; it is that a different architecture makes some of
++these problems impossible rather than fixable.
++
++Nothing here requires or permits copying code, binaries, shader patches or
++authentication from anyone. Reimplementing a technique from its public
++description is legitimate; lifting an implementation is not.
++
++---
++
++## 1. The structural weakness worth attacking
++
++The approach is: find every shader that draws scene geometry, patch it to emit
++motion vectors, feed those to the generator.
++
++Its failure mode follows directly from that sentence. **Coverage has to be
++complete, and it is never permanently complete.** Every game patch and every
++graphics mod introduces shaders the patcher has not seen. A shader that is missed
++produces no motion vectors for whatever it draws. A shader that is mis-patched
++produces wrong ones.
++
++And the consequence of a gap is severe, because the generator has no way to know
++it is looking at a hole. Missing motion reads as *zero* motion, which the
++generator interprets as "this pixel is stationary" — so a moving vehicle with an
++unpatched shader does not merely lose quality, it smears. The published history of
++per-mod motion-vector fixes is this failure mode showing up in the field.
++
++Call this **failing open**: when coverage breaks, the output is garbage, and the
++only repair is to extend the patcher again.
++
++### The inversion
++
++Reconstruct motion from depth and the camera matrices as the **base layer**, and
++let per-object geometry motion **override** it where it exists.
++
++```
++        depth + camera matrices          patched shaders
++                 │                              │
++                 ▼                              ▼
++       reprojected motion  ────merge────►  final motion
++       (exact for the static world)    (correct for movers too)
++```
++
++Now consider the same failure. A shader that is missed contributes nothing, so
++its pixels keep the reprojected value — which says "this moves the way the world
++moves". For a lamp post, a building or a road surface that is **exactly right**.
++For a moving vehicle it is wrong, but wrong in a bounded, local way rather than
++catastrophically.
++
++Call this **failing closed**: when coverage breaks, the output degrades toward
++"treated as scenery", which is correct for the overwhelming majority of the frame.
++
++Two consequences follow, and they are the reason this is worth the effort:
++
++**You no longer need to patch everything.** Static world geometry is already
++exact from reprojection. The shaders that must be patched are the ones drawing
++things that move independently — vehicles, pedestrians, animated props. That is
++tens of shaders rather than hundreds, and it is a set you can enumerate and
++verify rather than a set you have to chase.
++
++**A new game patch degrades instead of breaking.** New scene shaders inherit the
++reprojection base automatically. Only newly-introduced *movers* need attention,
++and their absence is a localised artifact, not a broken frame.
++
++This is implemented in the arbitration layer as of this version:
++
++```cpp
++enum class MotionSource {
++  None, OpticalFlow, CameraReprojected, Hybrid, Geometry
++};
++constexpr bool MayDriveFrameGeneration(MotionSource s) {
++  return s == MotionSource::Geometry;
++}
++```
++
++```
++tests/test_arbitration.cpp
++  ok   camera_motion_is_preferred_over_estimated_motion
++  ok   camera_motion_alone_is_used_when_there_is_nothing_to_combine_it_with
++  ok   geometry_motion_outranks_every_other_source
++  ok   only_geometry_motion_may_ever_drive_generated_frames
++  ok   camera_motion_does_not_unlock_generated_frames
++  ok   invariants_hold_across_the_entire_input_space   (1,728 cases)
++```
++
++Note the last two carefully. The base layer makes the *image pass* better
++immediately, and it is still **not** allowed to drive generated frames, because
++it cannot see independent movement. Improving the fallback must not lower the bar
++for the generator — that would trade one honest limitation for a subtle one.
++
++---
++
++## 2. Trusting motion vectors is a mistake; validate them
++
++Even a correct patch can produce a wrong vector. The hard part of per-object
++motion is not emitting it, it is knowing the object's **previous** transform,
++which means recognising that this draw call is the same object as one from last
++frame. Any identity heuristic — hashing index and vertex buffers, hashing the
++object's constant buffer — will occasionally collide or miss. A collision
++produces a confidently wrong vector, which is worse than no vector at all.
++
++So do not trust the buffer. **Check it.**
++
++After motion is assembled, run one cheap compute pass: for each pixel, sample the
++previous frame's colour at the position the motion vector points to, and compare
++it to the current colour over a small neighbourhood. Where the error is large,
++the vector did not predict what actually happened, and it is not trustworthy.
++
++That error field is worth two things:
++
++- **Fallback.** Replace low-confidence per-object vectors with the reprojected
++  base, which is at least self-consistent.
++- **A reactive mask.** Hand the confidence field to DLSS as its reactive or
++  disocclusion input. This is what those inputs exist for, and it is also the
++  correct answer for the class of surfaces that can never have good motion
++  vectors at all — glass, particles, rain, alpha-tested foliage — because they
++  have no single depth or single motion to describe.
++
++This pass costs a fraction of a millisecond and converts the most dangerous
++failure mode (confidently wrong) into the mildest one (known-uncertain).
++
++It also gives the interface something honest to display, which no closed solution
++can: *how much of this frame's motion do we actually believe?*
++
++---
++
++## 3. Alignment between NR and FG, by construction
++
++Running neural rendering and frame generation together is not a matter of
++enabling both. They must consume **the same inputs from the same frame**. If the
++image pass reads depth from frame N and the generator reads motion assembled for
++frame N−1, the result is temporal disagreement that looks like a rendering bug
++and is extremely hard to attribute.
++
++The usual way this goes wrong is that each consumer grabs the resources it needs
++independently, and alignment holds by convention — until a resolution change, a
++device reset or a dropped frame breaks it.
++
++**Make it structural instead.** The provider publishes one immutable frame packet:
++
++```
++FramePacket {
++  frame_index          monotonic, never reused
++  depth                + its convention
++  motion               + its MotionSource and confidence field
++  hudless colour
++  ui colour + alpha
++  camera constants     current and previous, jitter offset
++}
++```
++
++Consumers do not gather resources. They ask for a packet, and a packet either
++satisfies a consumer's requirements or it does not:
++
++- the image pass requires depth, motion of any source, and constants
++- the generator additionally requires HUD-less colour, the UI layer, and motion
++  whose source is `Geometry`
++
++A consumer handed a packet that does not satisfy it **declines the frame** rather
++than running on partial data. Alignment is then not something to maintain; it is
++a property of there being exactly one packet per frame index.
++
++This is what the existing `shared_neural_contract` flag should come to mean: not
++"the provider says it is fine", but "one packet satisfied both consumers".
++
++---
++
++## 4. The interface, and a FiveM-specific advantage
++
++Generic GTA V solutions handle the HUD by capturing the scene before the
++interface is drawn. That is necessary and not sufficient, for three reasons.
++
++**Transparent elements.** A translucent HUD panel is neither scene nor interface;
++it is both. Capturing "before UI" leaves the scene underneath correct, which is
++right — but the panel itself must then be composited at full resolution *after*
++generation, never passed through it.
++
++**World-space interface.** Markers, nameplates and waypoints are drawn in screen
++space but *belong* to world positions. They must move with the camera. Excluding
++them entirely makes them judder against the world; passing them through unmarked
++makes them smear. They need camera motion specifically — the reprojection base
++already computes exactly that, and this is a case where having it pays off twice.
++
++**And the part that is specific to your target:** on a FiveM RP server, most of
++the interface a player sees is not GTA's HUD at all. It is the server's own UI,
++drawn through NUI — a browser surface composited into the frame. That is a
++distinct, consistent render path, which makes it both easier to detect than
++GTA's own HUD draws and more important to get right, because on a busy RP server
++it covers a large fraction of the screen.
++
++A solution built for singleplayer GTA V has no reason to handle this and, as far
++as public information goes, does not. For your target it is arguably the single
++highest-value difference available — and it is *easier* than the general problem,
++not harder.
++
++The practical rule, in order of when each is applied:
++
++```
++scene  →  motion/depth  →  generator  →  composite UI at full resolution
++                                          ├─ screen-space UI: never entered the generator
++                                          └─ world-space markers: camera motion, generated
++```
++
++---
++
++## 5. Upscaling: resolution, and the fight you must not have
++
++Two ways to render below native:
++
++**Resize the scene render targets.** Intercept creation of scene-sized targets
++and allocate them smaller. Correct, and invasive: every post-process step that
++assumes a fixed relationship between buffer sizes breaks, and anything sampling
++with hard-coded texel offsets misbehaves.
++
++**Render into a sub-rectangle of full-size targets.** Keep allocations native,
++constrain viewport and scissor. Resource descriptors stay stable, resolution
++changes cost nothing, and device-loss handling gets simpler. It wastes memory
++bandwidth on the unused region, and anything that samples the full extent still
++needs care.
++
++Which is better is an empirical question about how GTA's post chain is built.
++Prototype the second first — it is far cheaper to abandon.
++
++**The fight you must not have.** DLSS super resolution is a temporal accumulator.
++So is the game's own temporal anti-aliasing. Two accumulators consuming the same
++frames, with different jitter assumptions and different histories, produce
++smearing that neither one is responsible for. **The game's temporal AA has to be
++off** whenever DLSS-SR is running.
++
++This is the same principle the arbitration layer already encodes for motion:
++two temporal systems must not silently fight for the same job. Worth extending
++the same rule to the upscaler rather than discovering it as a bug.
++
++**Jitter** must be injected into the projection matrix before the constant buffer
++is uploaded, and the *same* offsets handed to DLSS. Two failure modes to watch:
++a pass that rebuilds the matrix itself and so never sees the jitter, and a pass
++that should not be jittered at all — shadow rendering uses its own matrices and
++must be left alone.
++
++---
++
++## 6. The D3D11 ↔ D3D12 crossing
++
++Frame generation requires D3D12 or Vulkan; the game is D3D11. The interop layer
++is unavoidable, and it is where the performance goes if it is done carelessly.
++
++**Cross as little as possible.** Depth, HUD-less colour and the UI layer have to
++cross. Motion does not: it can be *generated* on the D3D12 side from depth and
++the camera constants, which are a handful of bytes. Per-object contributions
++still have to cross, but they are sparse.
++
++**Never synchronise with flushes.** Use shared fences
++(`ID3D11Device5::CreateFence` with the shared flag, opened on D3D12). A
++flush-and-hope design appears to work and then produces a torn frame under load,
++several frames after the actual mistake.
++
++**Use a ring of shared resources.** A single shared texture per input serialises
++the two devices on each other. Three deep is usually enough to keep both busy.
++
++**Build the repro harness before the feature.** A synchronisation bug surfaces as
++corruption some frames later, and without a deterministic way to reproduce it you
++will be debugging by intuition. This is the stage where that costs the most time.
++
++---
++
++## 7. Brittleness, and why runtime detection is not optional
++
