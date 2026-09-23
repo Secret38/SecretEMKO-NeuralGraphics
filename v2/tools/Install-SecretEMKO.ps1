@@ -67,6 +67,77 @@ function Ensure-Folder([string]$Path) {
     }
 }
 
+function Invoke-WithRetry([scriptblock]$Action, [string]$Label, [int]$Attempts = 5) {
+    $last = $null
+    for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
+        try {
+            return & $Action
+        }
+        catch {
+            $last = $_
+            if ($attempt -lt $Attempts) {
+                $delay = [Math]::Min(12, [Math]::Pow(2, $attempt - 1))
+                Warn ("$Label failed (attempt $attempt/$Attempts): " + $_.Exception.Message + "; retrying in $delay s")
+                Start-Sleep -Seconds $delay
+            }
+        }
+    }
+    throw $last
+}
+
+function Invoke-ResilientDownload([string]$Url, [string]$OutFile) {
+    Ensure-Folder (Split-Path -Parent $OutFile)
+    $partial = $OutFile + ".partial"
+    Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
+
+    try {
+        Invoke-WithRetry {
+            Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $partial -Headers @{ "User-Agent" = "SecretEMKO-v2" } -TimeoutSec 60
+            if (-not (Test-Path -LiteralPath $partial) -or (Get-Item -LiteralPath $partial).Length -le 0) {
+                throw "Download produced an empty file."
+            }
+        } ("Download " + (Split-Path -Leaf $OutFile))
+    }
+    catch {
+        Warn ("PowerShell download path failed; trying Windows curl.exe: " + $_.Exception.Message)
+        $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+        if (-not $curl) { throw }
+        & $curl.Source -fL --retry 5 --retry-delay 2 --connect-timeout 20 -A "SecretEMKO-v2" -o $partial $Url
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $partial) -or (Get-Item -LiteralPath $partial).Length -le 0) {
+            Remove-Item -LiteralPath $partial -Force -ErrorAction SilentlyContinue
+            throw "Download failed through both Invoke-WebRequest and curl.exe: $Url"
+        }
+    }
+
+    Move-Item -LiteralPath $partial -Destination $OutFile -Force
+}
+
+function Invoke-WebText([string]$Url) {
+    try {
+        return Invoke-WithRetry {
+            $response = Invoke-WebRequest -UseBasicParsing -Uri $Url -Headers @{ "User-Agent" = "SecretEMKO-v2" } -TimeoutSec 60
+            if (-not $response.Content) { throw "Response was empty." }
+            return [string]$response.Content
+        } ("Request " + $Url)
+    }
+    catch {
+        Warn ("PowerShell request path failed; trying Windows curl.exe: " + $_.Exception.Message)
+        $temp = Join-Path ([IO.Path]::GetTempPath()) ("SecretEMKO-web-" + [guid]::NewGuid().ToString("N") + ".tmp")
+        try {
+            $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+            if (-not $curl) { throw }
+            & $curl.Source -fL --retry 5 --retry-delay 2 --connect-timeout 20 -A "SecretEMKO-v2" -o $temp $Url
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $temp)) {
+                throw "Request failed through both Invoke-WebRequest and curl.exe: $Url"
+            }
+            return [IO.File]::ReadAllText($temp)
+        }
+        finally {
+            Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Get-PathId([string]$Path) {
     $normalized = [IO.Path]::GetFullPath($Path).TrimEnd('\').ToLowerInvariant()
     $bytes = [Text.Encoding]::UTF8.GetBytes($normalized)
@@ -212,7 +283,7 @@ function Download-Verified([string]$Url, [string]$Path, [string]$ExpectedHash) {
     }
     if ($need) {
         Write-Host "   Downloading $(Split-Path -Leaf $Path)..."
-        Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Path -Headers @{ "User-Agent" = "SecretEMKO-v2" }
+        Invoke-ResilientDownload $Url $Path
     }
     $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
     if ($actual -ine $ExpectedHash) {
@@ -262,8 +333,8 @@ function Test-ReShadeFullAddon([string]$Directory) {
 }
 
 function Get-LatestReShadeSetup([bool]$FullAddon) {
-    $landingPage = Invoke-WebRequest -UseBasicParsing -Uri "https://reshade.me/" -Headers @{ "User-Agent" = "SecretEMKO-v2" }
-    if ($landingPage.Content -notmatch 'Version\s+([0-9]+\.[0-9]+\.[0-9]+)') {
+    $landingPage = Invoke-WebText "https://reshade.me/"
+    if ($landingPage -notmatch 'Version\s+([0-9]+\.[0-9]+\.[0-9]+)') {
         throw "Could not resolve the current ReShade version from reshade.me."
     }
     $version = $Matches[1]
@@ -293,7 +364,7 @@ function Install-ReShadeHeadless([string]$Directory, [bool]$FullAddon) {
     if (-not (Test-Path -LiteralPath $setup)) {
         $label = if ($FullAddon) { "Full Add-on Support" } else { "standard signed build" }
         Step ("Downloading official ReShade " + $setupInfo.Version + " " + $label)
-        Invoke-WebRequest -UseBasicParsing -Uri $setupInfo.Url -OutFile $setup -Headers @{ "User-Agent" = "SecretEMKO-v2" }
+        Invoke-ResilientDownload $setupInfo.Url $setup
     }
 
     $hostSource = Join-Path $env:WINDIR "System32\notepad.exe"
