@@ -201,6 +201,7 @@ jobs:
           $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc5"
           $required = @(
             "SecretEMKO.addon64",
+            "SecretEMKO-FG.addon64",
             "dlss5-bridge.addon64",
             "INSTALL_SECRET_EMKO.bat",
             "INSTALL_SECRET_EMKO_FULL_NEURAL.bat",
@@ -223,6 +224,7 @@ jobs:
             if (-not (Test-Path $p)) { throw "Missing release file: $f" }
           }
           Get-FileHash "$stage\SecretEMKO.addon64" -Algorithm SHA256
+          Get-FileHash "$stage\SecretEMKO-FG.addon64" -Algorithm SHA256
           Get-FileHash "$stage\dlss5-bridge.addon64" -Algorithm SHA256
 
           $versions = Get-Content ".\v2\VERSIONS.json" -Raw | ConvertFrom-Json
@@ -240,6 +242,9 @@ jobs:
             "RefreshBridgeRuntimeSnapshot",
             "ApplyGamingStyle",
             "FrameGenProviderInstalled",
+            "QueryFrameGenProvider",
+            "ApplyCompatibilityMotionPath",
+            "ApplyNativeFrameGenPath",
             "FrameGenerationAutoBaseFPS",
             "HUD PROTECTION"
           )) {
@@ -260,7 +265,7 @@ jobs:
           $plugins = Join-Path $app "plugins"
           $ini = Join-Path $plugins "ReShade.ini"
           $bridge = Join-Path $plugins "dlss5-bridge.cfg"
-          foreach ($name in @("SecretEMKO.addon64","renodx-dlss5.addon64","dlss5-bridge.addon64","nvngx_dlssnr.dll","nvngx_dlss.dll")) {
+          foreach ($name in @("SecretEMKO.addon64","SecretEMKO-FG.addon64","renodx-dlss5.addon64","dlss5-bridge.addon64","nvngx_dlssnr.dll","nvngx_dlss.dll")) {
             if (-not (Test-Path (Join-Path $plugins $name))) { throw "Missing Full Neural backend: $name" }
           }
 
