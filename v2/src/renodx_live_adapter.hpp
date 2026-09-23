@@ -23,6 +23,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -421,7 +422,7 @@ class RenoDxLiveAdapter {
     const char* p = items;
     size_t used = 0;
     while (*p && count < 32 && used < 4096) {
-      const size_t n = strnlen(p, 256);
+      const size_t n = strnlen_s(p, 256);
       if (n >= 256) return false;
       ++count;
       p += n + 1;
