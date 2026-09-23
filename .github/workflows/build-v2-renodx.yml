@@ -98,7 +98,7 @@ jobs:
           }
           catch {
             $failed = $true
-            if ($_.Exception.Message -notmatch "built RC3 artifact") { throw }
+            if ($_.Exception.Message -notmatch "built RC4 artifact") { throw }
           }
 
           if (-not $failed) { throw "Source tree unexpectedly accepted Full Neural." }
