@@ -146,9 +146,16 @@ bool NeuralStackInstalled() {
          FileExists(L"nvngx_dlssnr.dll");
 }
 
+bool RenoDxLoaded() {
+  return ModuleLoaded(L"renodx-dlss5.addon64");
+}
+
+bool BridgeLoaded() {
+  return ModuleLoaded(L"dlss5-bridge.addon64");
+}
+
 bool NeuralBackendsLoaded() {
-  return ModuleLoaded(L"renodx-dlss5.addon64") &&
-         ModuleLoaded(L"dlss5-bridge.addon64");
+  return RenoDxLoaded() && BridgeLoaded();
 }
 
 std::string ReadConfigString(const char* section, const char* key) {
@@ -386,9 +393,9 @@ void WriteNeuralSettings() {
   WriteConfig(kProviderSection, "NRScreenshotKey", 0);
 
   if (AnyNeuralChange(before, g_nr)) {
-    if (NeuralBackendsLoaded() && g_live.available()) {
+    if (RenoDxLoaded() && g_live.available()) {
       g_live.queue_diff(ToLiveDesired(g_nr));
-    } else if (NeuralBackendsLoaded() || g_nr.enabled != 0) {
+    } else if (RenoDxLoaded() || g_nr.enabled != 0) {
       // Backends are present but cannot be controlled by the verified adapter,
       // or they are absent and need to be loaded. Never claim an immediate
       // runtime transition in either case.
@@ -489,9 +496,9 @@ void SetNeuralEnabled(bool enabled) {
     WriteNeuralSettings();
     WriteBridgeConfig(true);
     SetBackendLoadPolicy(false);
-    if (!g_live.available() && NeuralBackendsLoaded()) {
+    if (!g_live.available() && RenoDxLoaded()) {
       g_restart_required = true;
-      g_backend_status = "Backends will not load next start. RenoDX live shutdown is unavailable in this session, so restart is required for a guaranteed full stop.";
+      g_backend_status = "Backends will not load next start. RenoDX is loaded but live shutdown is unavailable in this session, so restart is required for a guaranteed full stop.";
     }
   }
 }
@@ -706,7 +713,7 @@ void DrawNeural() {
   }
   Help("Master switch for the complete managed backend chain. OFF idles the active provider/bridge immediately and schedules RenoDX + Bridge not to load next start. ON reuses loaded backends immediately or schedules them for the next start if they are currently absent.");
 
-  if (NeuralBackendsLoaded()) {
+  if (RenoDxLoaded()) {
     if (g_live.available())
       ImGui::TextDisabled("Live provider control: verified RenoDX v4.70, provider callback + readback active.");
     else
@@ -961,7 +968,7 @@ void DrawOverlay(reshade::api::effect_runtime* runtime) {
 
   // Apply changes queued by the SECRET EMKO widgets in this same frame and ask
   // RenoDX's own callback for an immediate readback confirmation.
-  if (NeuralBackendsLoaded()) {
+  if (RenoDxLoaded()) {
     const bool live_ok = g_live.tick(runtime);
     if (g_live.has_pending() || g_live.has_confirming() || (!live_ok && g_nr.enabled != 0))
       g_restart_required = true;
