@@ -1001,9 +1001,9 @@ void OnOverlayFrame(reshade::api::effect_runtime* runtime) {
 }
 
 void Attach() {
-  LoadNeuralSettings();
-  LoadBridgeConfig();
-  g_loaded = true;
+  // Keep DllMain loader-lock work minimal. Config/file I/O is deferred to the
+  // first ReShade overlay frame in OnOverlayFrame/DrawOverlay.
+  g_loaded = false;
   reshade::register_event<reshade::addon_event::reshade_overlay>(OnOverlayFrame);
   reshade::register_overlay(kProduct, DrawOverlay);
 }
