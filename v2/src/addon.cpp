@@ -409,8 +409,7 @@ void LoadNeuralSettings() {
   ReadConfig(kOwnSection, "BackendsNextStart", backends);
   g_backends_next_start = backends != 0;
   g_saved_nr = g_nr;
-  g_provider_restart_pending = false;
-  g_live.set_baseline(ToLiveDesired(g_nr));
+  g_live.synchronize_all(ToLiveDesired(g_nr));
 }
 
 void ApplyProfile(int index) {
@@ -560,9 +559,15 @@ void DrawOverview() {
     ImGui::SameLine();
   }
   if (ImGui::Button("Reload settings", ImVec2(150, 34))) {
+    const NeuralSettings before_reload = g_nr;
+    const bool previous_provider_restart = g_provider_restart_pending;
     LoadNeuralSettings();
     LoadBridgeConfig();
-    g_restart_required = false;
+    g_provider_restart_pending =
+        previous_provider_restart || ProviderRestartOnlyChange(before_reload, g_nr);
+    g_restart_required =
+        g_provider_restart_pending ||
+        (g_nr.enabled != 0 && !NeuralBackendsLoaded());
   }
   if (!neural_stack) {
     ImGui::TextWrapped("Visual compatibility mode is active. ReShade presets remain available, but the RTX 50 DLSS 5 Neural stack is not installed.");
