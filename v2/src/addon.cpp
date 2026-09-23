@@ -24,11 +24,12 @@
 
 #include <deps/imgui/imgui.h>
 #include <include/reshade.hpp>
+#include "renodx_live_adapter.hpp"
 
 namespace {
 
 constexpr const char* kProduct = "SECRET EMKO Neural Graphics";
-constexpr const char* kVersion = "2.0.0-rc2";
+constexpr const char* kVersion = "2.0.0-rc3";
 constexpr const char* kProviderSection = "RenoDX.DLSS5";
 constexpr const char* kOwnSection = "SecretEMKO";
 
@@ -36,6 +37,10 @@ HMODULE g_module = nullptr;
 std::filesystem::path g_dir;
 bool g_restart_required = false;
 bool g_loaded = false;
+bool g_policy_synced = false;
+bool g_backends_next_start = true;
+bool g_backend_transition_pending = false;
+std::string g_backend_status;
 
 struct NeuralSettings {
   int enabled = 1;
@@ -103,7 +108,9 @@ constexpr std::array<Profile, 6> kProfiles = {{
 }};
 
 NeuralSettings g_nr;
+NeuralSettings g_saved_nr;
 BridgeSettings g_bridge;
+secretemko_live::RenoDxLiveAdapter g_live;
 int g_profile_index = 3;
 int g_fg_policy = 0; // 0 off, 1 2x, 2 3x; policy only until provider exists.
 
@@ -134,8 +141,110 @@ bool ModuleLoaded(const wchar_t* name) {
   return GetModuleHandleW(name) != nullptr;
 }
 
-bool NeuralStackPresent() {
-  return FileExists(L"renodx-dlss5.addon64") && FileExists(L"nvngx_dlssnr.dll");
+bool NeuralStackInstalled() {
+  return FileExists(L"renodx-dlss5.addon64") &&
+         FileExists(L"dlss5-bridge.addon64") &&
+         FileExists(L"nvngx_dlssnr.dll");
+}
+
+bool NeuralBackendsLoaded() {
+  return ModuleLoaded(L"renodx-dlss5.addon64") &&
+         ModuleLoaded(L"dlss5-bridge.addon64");
+}
+
+std::string ReadConfigString(const char* section, const char* key) {
+  size_t size = 0;
+  if (!reshade::get_config_value(nullptr, section, key, nullptr, &size) || size == 0)
+    return {};
+  std::vector<char> buffer(size + 1, '\0');
+  if (!reshade::get_config_value(nullptr, section, key, buffer.data(), &size))
+    return {};
+  return std::string(buffer.data());
+}
+
+std::string Trim(std::string value) {
+  const auto not_space = [](unsigned char ch) { return !std::isspace(ch); };
+  value.erase(value.begin(), std::find_if(value.begin(), value.end(), not_space));
+  value.erase(std::find_if(value.rbegin(), value.rend(), not_space).base(), value.end());
+  return value;
+}
+
+bool EntryTargetsFile(const std::string& entry, const char* file) {
+  const auto at = entry.find('@');
+  if (at == std::string::npos) return false;
+  std::string tail = Trim(entry.substr(at + 1));
+  std::string wanted = file;
+  std::transform(tail.begin(), tail.end(), tail.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  std::transform(wanted.begin(), wanted.end(), wanted.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  return tail == wanted;
+}
+
+void SetBackendLoadPolicy(bool load_next_start) {
+  std::vector<std::string> entries;
+  std::stringstream stream(ReadConfigString("ADDON", "DisabledAddons"));
+  std::string item;
+  while (std::getline(stream, item, ',')) {
+    item = Trim(item);
+    if (item.empty()) continue;
+    if (EntryTargetsFile(item, "renodx-dlss5.addon64") ||
+        EntryTargetsFile(item, "dlss5-bridge.addon64"))
+      continue;
+    entries.push_back(item);
+  }
+
+  if (!load_next_start) {
+    entries.emplace_back("SECRET EMKO RenoDX backend@renodx-dlss5.addon64");
+    entries.emplace_back("SECRET EMKO DLSS5 bridge@dlss5-bridge.addon64");
+  }
+
+  std::ostringstream joined;
+  for (size_t i = 0; i < entries.size(); ++i) {
+    if (i) joined << ',';
+    joined << entries[i];
+  }
+  reshade::set_config_value(nullptr, "ADDON", "DisabledAddons", joined.str().c_str());
+
+  g_backends_next_start = load_next_start;
+  WriteConfig(kOwnSection, "BackendsNextStart", load_next_start ? 1 : 0);
+
+  const bool loaded_now = NeuralBackendsLoaded();
+  g_backend_transition_pending = load_next_start != loaded_now;
+  if (!load_next_start && loaded_now)
+    g_backend_status = "Backends are idle now and scheduled not to load next start.";
+  else if (load_next_start && !loaded_now)
+    g_backend_status = "Backends are scheduled to load on the next start.";
+  else
+    g_backend_status = load_next_start ? "Backends are loaded for this session." : "Backends are not loaded.";
+}
+
+secretemko_live::Desired ToLiveDesired(const NeuralSettings& value) {
+  secretemko_live::Desired d;
+  d.enabled = value.enabled;
+  d.enable_upscaling = value.enable_upscaling;
+  d.preset = value.preset;
+  d.style = value.style;
+  d.intensity = value.intensity;
+  d.global_tone = value.global_tone;
+  d.local_tone = value.local_tone;
+  d.local_structure = value.local_structure;
+  d.skin_structure = value.skin_structure;
+  d.auto_mask = value.auto_mask;
+  d.ui_correction = value.ui_correction;
+  d.diffuse_white_nits = value.diffuse_white_nits;
+  d.depth_mode = value.depth_mode;
+  d.mv_scale_x = value.mv_scale_x;
+  d.mv_scale_y = value.mv_scale_y;
+  return d;
+}
+
+bool AnyNeuralChange(const NeuralSettings& a, const NeuralSettings& b) {
+  return std::memcmp(&a, &b, sizeof(NeuralSettings)) != 0;
+}
+
+bool ProviderRestartOnlyChange(const NeuralSettings& a, const NeuralSettings& b) {
+  return std::fabs(a.paper_white_scale - b.paper_white_scale) > 0.0001f ||
+         std::fabs(a.transfer_strength - b.transfer_strength) > 0.0001f ||
+         std::fabs(a.color_strength - b.color_strength) > 0.0001f;
 }
 
 std::filesystem::path BridgeConfigPath() {
@@ -164,15 +273,15 @@ int ParseInt(const std::unordered_map<std::string, std::string>& map, const char
   try { return std::stoi(it->second); } catch (...) { return fallback; }
 }
 
-void WriteBridgeConfig() {
+void WriteBridgeConfig(bool force_off = false) {
   std::ofstream out(BridgeConfigPath(), std::ios::trunc);
   if (!out) return;
 
   out << "# dlss5-bridge keep\n";
   out << "# Managed by SECRET EMKO Neural Graphics. Unknown bridge defaults remain upstream defaults.\n";
-  out << "synth=" << g_bridge.synth << "\n";
+  out << "synth=" << (force_off ? 0 : g_bridge.synth) << "\n";
   static const char* sources[] = {"auto", "synth", "mirror", "off"};
-  out << "source=" << sources[std::clamp(g_bridge.source, 0, 3)] << "\n";
+  out << "source=" << (force_off ? "off" : sources[std::clamp(g_bridge.source, 0, 3)]) << "\n";
   out << "ofa_grid=" << g_bridge.ofa_grid << "\n";
   out << "ofa_perf=" << g_bridge.ofa_perf << "\n";
   out << "stage=" << g_bridge.stage << "\n";
@@ -207,6 +316,8 @@ void LoadBridgeConfig() {
 }
 
 void WriteNeuralSettings() {
+  const NeuralSettings before = g_saved_nr;
+
   WriteConfig(kProviderSection, "EnableHooks", 2);
   WriteConfig(kProviderSection, "NeuralUplift", g_nr.enabled);
   WriteConfig(kProviderSection, "NREnableUpscaling", g_nr.enable_upscaling);
@@ -228,7 +339,22 @@ void WriteNeuralSettings() {
   WriteConfig(kProviderSection, "NRMVecScaleY", g_nr.mv_scale_y);
   WriteConfig(kProviderSection, "NRToggleKey", 0);
   WriteConfig(kProviderSection, "NRScreenshotKey", 0);
-  g_restart_required = true;
+
+  if (AnyNeuralChange(before, g_nr)) {
+    if (NeuralBackendsLoaded() && g_live.available()) {
+      g_live.queue_diff(ToLiveDesired(g_nr));
+    } else if (g_nr.enabled != 0) {
+      g_restart_required = true;
+    }
+
+    // These legacy/provider values are persisted but are not exposed by the
+    // verified RenoDX v4.70 UI callback, so SECRET EMKO never pretends that
+    // they were changed live.
+    if (ProviderRestartOnlyChange(before, g_nr))
+      g_restart_required = true;
+  }
+
+  g_saved_nr = g_nr;
 }
 
 void LoadNeuralSettings() {
@@ -255,6 +381,11 @@ void LoadNeuralSettings() {
 
   g_profile_index = std::clamp(g_profile_index, 0, static_cast<int>(kProfiles.size()) - 1);
   g_fg_policy = std::clamp(g_fg_policy, 0, 2);
+  int backends = g_nr.enabled != 0 ? 1 : 0;
+  ReadConfig(kOwnSection, "BackendsNextStart", backends);
+  g_backends_next_start = backends != 0;
+  g_saved_nr = g_nr;
+  g_live.set_baseline(ToLiveDesired(g_nr));
 }
 
 void ApplyProfile(int index) {
@@ -286,8 +417,29 @@ void ApplyProfile(int index) {
   g_bridge.ofa_perf = p.ofa_perf;
 
   WriteConfig(kOwnSection, "Profile", g_profile_index);
+  SetBackendLoadPolicy(true);
   WriteNeuralSettings();
-  WriteBridgeConfig();
+  WriteBridgeConfig(false);
+}
+
+void SetNeuralEnabled(bool enabled) {
+  g_nr.enabled = enabled ? 1 : 0;
+
+  if (enabled) {
+    if (g_bridge.synth == 0) g_bridge.synth = 1;
+    if (g_bridge.source == 3) g_bridge.source = 1;
+    SetBackendLoadPolicy(true);
+    WriteNeuralSettings();
+    WriteBridgeConfig(false);
+    if (!NeuralBackendsLoaded()) g_restart_required = true;
+  } else {
+    // First turn the active provider and bridge into an idle state. Loaded
+    // modules remain mapped for the rest of this process; unloading arbitrary
+    // ReShade add-ons mid-frame is intentionally avoided.
+    WriteNeuralSettings();
+    WriteBridgeConfig(true);
+    SetBackendLoadPolicy(false);
+  }
 }
 
 void Help(const char* text) {
@@ -351,7 +503,7 @@ void DrawHeader() {
   ImGui::TextUnformatted("SECRET EMKO");
   ImGui::SameLine();
   ImGui::TextDisabled("NEURAL GRAPHICS");
-  const bool neural_stack = NeuralStackPresent();
+  const bool neural_stack = NeuralStackInstalled();
   ImGui::TextDisabled(neural_stack
       ? "FiveM GTA V Legacy  |  Full Neural mode  |  v2.0 RC2"
       : "FiveM GTA V Legacy  |  Visual compatibility mode  |  v2.0 RC2");
@@ -363,12 +515,15 @@ void DrawHeader() {
   ImGui::PopStyleVar();
 
   if (g_restart_required) {
-    ImGui::TextWrapped("Restart required: Neural-model settings were written to ReShade.ini. The RenoDX DLSS 5 provider reads these values during its initialization.");
+    ImGui::TextWrapped("Restart required for at least one pending change: either a backend must be loaded for the next session or a provider-only value is not part of the verified RenoDX v4.70 live-control surface.");
+  }
+  if (!g_backend_status.empty()) {
+    ImGui::TextDisabled("%s", g_backend_status.c_str());
   }
 }
 
 void DrawOverview() {
-  const bool neural_stack = NeuralStackPresent();
+  const bool neural_stack = NeuralStackInstalled();
   if (neural_stack) {
     if (ImGui::Button("Apply Enhanced (Recommended)", ImVec2(230, 34))) {
       ApplyProfile(3);
@@ -404,14 +559,16 @@ void DrawOverview() {
   ImGui::Spacing();
   ImGui::SeparatorText("Current design");
   ImGui::BulletText("FiveM keeps its normal D3D11 device creation path.");
-  ImGui::BulletText("ReShade loads Secret EMKO, RenoDX DLSS 5 and DLSS 5 Bridge as add-ons.");
+  ImGui::BulletText("SECRET EMKO is the only user-facing control surface.");
+  ImGui::BulletText("RenoDX DLSS 5 and DLSS 5 Bridge are treated as managed backends and are only scheduled to load when Neural Rendering is enabled.");
+  ImGui::BulletText("Loaded backends are soft-disabled immediately when Neural Rendering is turned off; ReShade skips loading them on the next start.");
   ImGui::BulletText("The bridge uses a synthetic DLSS contract because GTA V Legacy has no native DLSS.");
   ImGui::BulletText("Neural Rendering is tuned by Secret EMKO profiles; raw controls remain available.");
   ImGui::BulletText("No PureDark code, authentication or paid-mod assets are used.");
 }
 
 void DrawProfiles() {
-  if (!NeuralStackPresent()) {
+  if (!NeuralStackInstalled()) {
     ImGui::SeparatorText("Neural style profiles");
     ImGui::TextWrapped("Unavailable in visual compatibility mode. Use the ReShade Home tab to switch between Secret_Emko_Main.ini and Secret_Emko_Stream.ini.");
     return;
@@ -477,7 +634,7 @@ bool Slider(const char* label, float* value, float lo, float hi, const char* hel
 
 void DrawNeural() {
   bool changed = false;
-  const bool neural_stack = NeuralStackPresent();
+  const bool neural_stack = NeuralStackInstalled();
   if (!neural_stack) {
     ImGui::TextWrapped("Neural Rendering is unavailable in this installation. SECRET EMKO is running in visual compatibility mode. Official DLSS 5 3D-Guided Neural Rendering requires GeForce RTX 50-series hardware.");
     return;
@@ -485,10 +642,20 @@ void DrawNeural() {
 
   bool enabled = g_nr.enabled != 0;
   if (ImGui::Checkbox("Enable DLSS Neural Rendering", &enabled)) {
-    g_nr.enabled = enabled ? 1 : 0;
-    changed = true;
+    SetNeuralEnabled(enabled);
   }
-  Help("Master switch used by the RenoDX DLSS 5 neural consumer.");
+  Help("Master switch for the complete managed backend chain. OFF idles the active provider/bridge immediately and schedules RenoDX + Bridge not to load next start. ON reuses loaded backends immediately or schedules them for the next start if they are currently absent.");
+
+  if (NeuralBackendsLoaded()) {
+    if (g_live.available())
+      ImGui::TextDisabled("Live provider control: verified RenoDX v4.70, direct callback readback active.");
+    else
+      ImGui::TextWrapped("Live provider control unavailable: %s. Values are still persisted, but unsupported changes require a restart.", g_live.reason().c_str());
+  } else if (g_nr.enabled) {
+    ImGui::TextWrapped("Neural backends are not loaded in this session. They are enabled for the next start.");
+  } else {
+    ImGui::TextDisabled("Neural backends are sleeping and scheduled not to load next start.");
+  }
 
   ImGui::Spacing();
   ImGui::SeparatorText("Model");
@@ -530,7 +697,7 @@ void DrawNeural() {
 }
 
 void DrawQuality() {
-  if (!NeuralStackPresent()) {
+  if (!NeuralStackInstalled()) {
     ImGui::TextWrapped("Neural quality controls are unavailable in visual compatibility mode. ReShade post-processing remains active.");
     return;
   }
@@ -568,7 +735,7 @@ void DrawQuality() {
 }
 
 void DrawBridge() {
-  if (!NeuralStackPresent()) {
+  if (!NeuralStackInstalled()) {
     ImGui::TextWrapped("DLSS 5 Bridge is not installed in visual compatibility mode.");
     return;
   }
@@ -611,7 +778,7 @@ void DrawBridge() {
 
   ImGui::TextWrapped("FiveM online note: ReShade can restrict depth access during network play. SECRET EMKO does not bypass that safety behavior; the bridge therefore prioritizes hardware optical flow on the synthetic route.");
 
-  if (changed) WriteBridgeConfig();
+  if (changed) WriteBridgeConfig(g_nr.enabled == 0);
 
   if (ImGui::Button("Restore GTA/FiveM bridge defaults")) {
     g_bridge = {};
@@ -626,7 +793,7 @@ void DrawBridge() {
     g_bridge.skip_exe = 1;
     g_bridge.unwrap = 1;
     g_bridge.hash_out = 1;
-    WriteBridgeConfig();
+    WriteBridgeConfig(g_nr.enabled == 0);
   }
 }
 
@@ -700,11 +867,20 @@ void DrawAbout() {
   ImGui::TextWrapped("SECRET EMKO branding does not imply authorship of RenoDX, ReShade, DLSS 5 Bridge or NVIDIA technology. See THIRD_PARTY_NOTICES.md and the licenses folder installed with the package.");
 }
 
-void DrawOverlay(reshade::api::effect_runtime*) {
+void DrawOverlay(reshade::api::effect_runtime* runtime) {
   if (!g_loaded) {
     LoadNeuralSettings();
     LoadBridgeConfig();
     g_loaded = true;
+  }
+
+  // Validate/hide the RenoDX backend page and discover its live controls before
+  // drawing SECRET EMKO. This does not patch unknown RenoDX builds.
+  g_live.tick(runtime);
+
+  if (!g_policy_synced) {
+    SetBackendLoadPolicy(g_nr.enabled != 0);
+    g_policy_synced = true;
   }
 
   DrawHeader();
@@ -720,6 +896,14 @@ void DrawOverlay(reshade::api::effect_runtime*) {
     if (ImGui::BeginTabItem("About")) { DrawAbout(); ImGui::EndTabItem(); }
     ImGui::EndTabBar();
   }
+
+  // Apply changes queued by the SECRET EMKO widgets in this same frame and ask
+  // RenoDX's own callback for an immediate readback confirmation.
+  if (NeuralBackendsLoaded()) {
+    const bool live_ok = g_live.tick(runtime);
+    if (g_live.has_pending() || (!live_ok && g_nr.enabled != 0))
+      g_restart_required = true;
+  }
 }
 
 void Attach() {
@@ -729,6 +913,7 @@ void Attach() {
 }
 
 void Detach() {
+  g_live.restore_provider_overlay();
   reshade::unregister_overlay(kProduct, DrawOverlay);
 }
 
