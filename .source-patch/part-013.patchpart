@@ -1,0 +1,380 @@
++  //     kept out of the planner so the planner stays a pure function.
++  if (facts_.cost.measured() && facts_.measured_fps > 1.0f) {
++    const float frame_budget_ms = 1000.0f / facts_.measured_fps;
++    const core::BudgetVerdict verdict =
++        governor_.observe(facts_.cost, frame_budget_ms, plan_.frames.multiplier);
++    facts_.allowed_quality = governor_.quality();
++    facts_.allowed_multiplier = governor_.max_multiplier();
++    facts_.allowed_second_pass = governor_.second_pass();
++    if (verdict.action != core::BudgetAction::Hold && journal_) {
++      journal_->write(core::Severity::Notice, verdict.reason);
++    }
++  }
++
++  // 2c. And whether there is video memory for a second history at all. Judged
++  //     separately from time: memory pressure comes from what else the machine
++  //     is doing, so it moves on its own schedule and has its own verdict.
++  facts_.vram = core::JudgeSecondInstance(facts_.video_memory,
++                                          plan_.passes.second_pass_runs());
++  facts_.video_memory_allows_second_pass = facts_.vram.allow_second_instance;
++
++  // 3. Decide. Pure function, no side effects, fully determined by 1 and 2.
++  plan_ = core::MakePlan(intent_, snapshot_, facts_);
++
++  // 4. Make it true, but only where it differs from what is already true.
++  apply_plan(now, force);
++
++  // 5. Project it for the person reading the screen.
++  const core::StatusReport previous = std::move(status_);
++  status_ = core::MakeStatus(snapshot_, plan_);
++  log_transitions(previous, status_);
++
++  force_apply_ = false;
++  ++stats_.ticks;
++}
++
++}  // namespace emko::app
+diff --git a/v3/src/app/kernel.hpp b/v3/src/app/kernel.hpp
+new file mode 100644
+index 0000000..4f31749
+--- /dev/null
++++ b/v3/src/app/kernel.hpp
+@@ -0,0 +1,123 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - app/kernel.hpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ *
++ * The orchestrator, and the only stateful object in the product.
++ *
++ * One tick is one full pass of the loop from the product brief:
++ *
++ *     probe -> evidence -> resolve -> plan -> apply -> status
++ *
++ * Every rung is re-derived from scratch. Nothing is remembered between ticks
++ * except Intent (which the user owns), the evidence ledgers (which expire on
++ * their own) and what each effector last applied (so it can stay idempotent).
++ * There is no "restart required" flag to get stuck, no "policy synced" latch to
++ * forget, and no ordering between helpers that a reader has to reconstruct.
++ */
++
++#ifndef SECRETEMKO_APP_KERNEL_HPP
++#define SECRETEMKO_APP_KERNEL_HPP
++
++#include <memory>
++#include <optional>
++#include <utility>
++#include <vector>
++
++#include "app/ports.hpp"
++#include "core/budget.hpp"
++#include "core/planner.hpp"
++#include "core/status.hpp"
++
++namespace emko::app {
++
++struct KernelStats {
++  std::uint64_t ticks = 0;
++  std::uint64_t plans_applied = 0;
++  std::uint64_t probe_samples = 0;
++  Timestamp last_apply_at = 0;
++};
++
++class Kernel {
++ public:
++  Kernel();
++  ~Kernel();
++
++  Kernel(const Kernel&) = delete;
++  Kernel& operator=(const Kernel&) = delete;
++
++  void add_probe(std::unique_ptr<Probe> probe);
++  void add_effector(std::unique_ptr<Effector> effector);
++  void set_intent_store(std::unique_ptr<IntentStore> store);
++  void set_journal(std::unique_ptr<Journal> journal);
++
++  // Read Intent from storage and take one full pass so the interface has a
++  // populated status before its first frame is drawn.
++  void start(Timestamp now);
++
++  // One pass. Safe to call every frame; probes respect their own intervals and
++  // effectors only write when the applied part of the plan actually changed.
++  void tick(Timestamp now);
++
++  // The interface edits a copy and commits it. Committing persists Intent and
++  // forces the next tick to apply, regardless of probe intervals - a user who
++  // just moved a slider should not wait for a polling window.
++  [[nodiscard]] const core::Intent& intent() const { return intent_; }
++  void commit(const core::Intent& next, Timestamp now);
++
++  [[nodiscard]] const core::Plan& plan() const { return plan_; }
++  [[nodiscard]] const core::Snapshot& snapshot() const { return snapshot_; }
++  [[nodiscard]] const core::StatusReport& status() const { return status_; }
++  [[nodiscard]] const KernelStats& stats() const { return stats_; }
++
++  // Effector outcomes from the most recent apply, for the Status page.
++  [[nodiscard]] const std::vector<std::pair<const char*, ApplyReport>>&
++  last_reports() const {
++    return reports_;
++  }
++
++  // Exposed so probes written outside this translation unit can deposit
++  // evidence, and so tests can construct any situation directly.
++  CapabilityGraph& graph() { return graph_; }
++  RuntimeFacts& facts() { return facts_; }
++
++  // The budget governor is stateful, so it cannot live in the pure planner. It
++  // sits here and its verdict reaches the planner as an observation.
++  core::BudgetGovernor& governor() { return governor_; }
++
++  // Force the next tick to re-apply everything rather than diffing against what
++  // it last applied. Used when something outside the plan changed underneath
++  // the effectors - a diagnostic switch, a device reset.
++  void request_apply() { force_apply_ = true; }
++
++ private:
++  void run_probes(Timestamp now);
++  void apply_plan(Timestamp now, bool force);
++  void log_transitions(const core::StatusReport& before,
++                       const core::StatusReport& after);
++
++  CapabilityGraph graph_;
++  RuntimeFacts facts_;
++  core::Intent intent_;
++  core::Snapshot snapshot_;
++  core::Plan plan_;
++  core::StatusReport status_;
++
++  std::vector<std::unique_ptr<Probe>> probes_;
++  std::vector<Timestamp> probe_last_run_;
++  std::vector<std::unique_ptr<Effector>> effectors_;
++  std::vector<std::pair<const char*, ApplyReport>> reports_;
++
++  std::unique_ptr<IntentStore> store_;
++  std::unique_ptr<Journal> journal_;
++
++  core::BudgetGovernor governor_;
++  std::optional<core::Plan::Applied> last_applied_;
++  bool force_apply_ = true;
++  bool started_ = false;
++  KernelStats stats_;
++};
++
++}  // namespace emko::app
++
++#endif  // SECRETEMKO_APP_KERNEL_HPP
+diff --git a/v3/src/app/ports.hpp b/v3/src/app/ports.hpp
+new file mode 100644
+index 0000000..3ad9296
+--- /dev/null
++++ b/v3/src/app/ports.hpp
+@@ -0,0 +1,92 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - app/ports.hpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ *
++ * The two boundaries between the decision layer and the machine.
++ *
++ *   Probe    - reads the world and deposits evidence. Never decides anything.
++ *   Effector - takes a Plan and makes it true. Never decides anything either;
++ *              it reports what it managed to do, as evidence, and the graph
++ *              draws its own conclusions on the next tick.
++ *
++ * Keeping the arrows one-directional is what makes the whole system explicable:
++ * observation flows up into the graph, decisions flow down into effectors, and
++ * nothing in the middle reaches sideways.
++ */
++
++#ifndef SECRETEMKO_APP_PORTS_HPP
++#define SECRETEMKO_APP_PORTS_HPP
++
++#include <string>
++
++#include "core/capability.hpp"
++#include "core/plan.hpp"
++#include "core/time.hpp"
++
++namespace emko::app {
++
++using core::CapabilityGraph;
++using core::Plan;
++using core::RuntimeFacts;
++using core::Timestamp;
++
++class Probe {
++ public:
++  virtual ~Probe() = default;
++
++  // Stable name, used in logs and in the Status page's provenance column.
++  [[nodiscard]] virtual const char* name() const = 0;
++
++  // How often this probe wants to run. Cheap module checks can run every frame;
++  // hashing a 1.7 MB binary should not.
++  [[nodiscard]] virtual core::Millis interval() const { return 500; }
++
++  virtual void sample(CapabilityGraph& graph, RuntimeFacts& facts, Timestamp now) = 0;
++};
++
++// What an effector managed to do. Deferred is a first-class outcome: plenty of
++// changes legitimately cannot take effect until the next process start, and
++// pretending otherwise is the single most common way to lie to a user.
++enum class ApplyResult : std::uint8_t {
++  Unchanged = 0,
++  Applied = 1,
++  Deferred = 2,   // persisted, takes effect after a restart
++  Rejected = 3,   // could not be done, reason attached
++};
++
++struct ApplyReport {
++  ApplyResult result = ApplyResult::Unchanged;
++  std::string detail;
++};
++
++class Effector {
++ public:
++  virtual ~Effector() = default;
++
++  [[nodiscard]] virtual const char* name() const = 0;
++
++  // Make the plan true. Implementations must be idempotent: the kernel may call
++  // this again with an identical plan and nothing observable may change.
++  virtual ApplyReport apply(const Plan& plan, CapabilityGraph& graph,
++                            Timestamp now) = 0;
++};
++
++// Where Intent is kept between sessions.
++class IntentStore {
++ public:
++  virtual ~IntentStore() = default;
++  virtual core::Intent load() = 0;
++  virtual void save(const core::Intent& intent) = 0;
++};
++
++// Structured logging. One line per meaningful transition, never per frame.
++class Journal {
++ public:
++  virtual ~Journal() = default;
++  virtual void write(core::Severity severity, const std::string& line) = 0;
++};
++
++}  // namespace emko::app
++
++#endif  // SECRETEMKO_APP_PORTS_HPP
+diff --git a/v3/src/core/arbitration.cpp b/v3/src/core/arbitration.cpp
+new file mode 100644
+index 0000000..0c570f7
+--- /dev/null
++++ b/v3/src/core/arbitration.cpp
+@@ -0,0 +1,201 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/arbitration.cpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "core/arbitration.hpp"
++
++namespace emko::core {
++
++ArbitrationInput DeriveInput(const Intent& intent, const Snapshot& snap) {
++  ArbitrationInput in;
++  in.wants_neural = intent.wants_neural();
++  in.wants_frame_gen = intent.wants_frame_gen();
++
++  // "Ready" is the right bar here, not "Active": arbitration decides what we
++  // are going to ask for, and a path that is merely Armed has not been given
++  // anything to do yet. Demanding Active would deadlock - nothing can become
++  // Active until arbitration grants it.
++  in.neural_chain_ready = snap.at_least(CapId::RenoDxProvider, Lifecycle::Ready) &&
++                          snap.at_least(CapId::DlssNrRuntime, Lifecycle::Installed) &&
++                          snap.at_least(CapId::DlssSrRuntime, Lifecycle::Installed);
++
++  in.optical_flow_ready = snap.at_least(CapId::OpticalFlowMotion, Lifecycle::Ready);
++  in.camera_motion_ready = snap.at_least(CapId::CameraMotion, Lifecycle::Ready);
++  in.geometry_motion_ready = snap.at_least(CapId::ShaderMotion, Lifecycle::Ready);
++  in.frame_gen_ready = snap.at_least(CapId::FrameGeneration, Lifecycle::Ready);
++
++  // The shared contract is a claim the input provider has to make explicitly.
++  // Absence of the claim means "not proven", never "probably fine".
++  in.shared_neural_contract =
++      in.geometry_motion_ready &&
++      snap.at_least(CapId::FrameConstants, Lifecycle::Ready) &&
++      snap[CapId::ShaderMotion].confidence == Confidence::Strong;
++
++  return in;
++}
++
++namespace {
++
++// Pick the best motion the image pass can have. The order is not a ranking of
++// quality in the abstract - it is a ranking of how little each source has to
++// guess.
++MotionSource BestNeuralMotion(const ArbitrationInput& in) {
++  if (in.geometry_motion_ready) return MotionSource::Geometry;
++  if (in.camera_motion_ready && in.optical_flow_ready) return MotionSource::Hybrid;
++  if (in.camera_motion_ready) return MotionSource::CameraReprojected;
++  if (in.optical_flow_ready) return MotionSource::OpticalFlow;
++  return MotionSource::None;
++}
++
++RuleId RuleFor(MotionSource source) {
++  switch (source) {
++    case MotionSource::Geometry: return RuleId::NeuralOnGeometryMotion;
++    case MotionSource::Hybrid: return RuleId::NeuralOnHybridMotion;
++    case MotionSource::CameraReprojected: return RuleId::NeuralOnCameraMotion;
++    case MotionSource::OpticalFlow: return RuleId::NeuralOnCompatibilityMotion;
++    case MotionSource::None: return RuleId::NeuralUnavailable;
++  }
++  return RuleId::NeuralUnavailable;
++}
++
++}  // namespace
++
++ArbitrationResult Arbitrate(const Intent& intent, const ArbitrationInput& in) {
++  ArbitrationResult r;
++
++  // ---- Frame Generation is the loudest request, so it is resolved first ----
++  if (in.wants_frame_gen) {
++    // Asking for extra frames while the image pass is switched off is a
++    // contradiction we refuse rather than silently reinterpret: frame
++    // generation here is part of the neural pipeline, not a standalone toggle.
++    if (!in.wants_neural) {
++      r.rule = RuleId::FrameGenDeniedStrengthZero;
++      r.frame_gen_denied = true;
++      r.motion = MotionSource::None;
++      return r;
++    }
++
++    if (!in.frame_gen_ready || !in.geometry_motion_ready) {
++      // Fail closed. Fall back to whatever the image pass alone can still do,
++      // and never report the saved 2x/3x selection as if it were running.
++      r.frame_gen_denied = true;
++      r.rule = RuleId::FrameGenUnavailable;
++      const MotionSource fallback = BestNeuralMotion(in);
++      if (in.neural_chain_ready && fallback != MotionSource::None) {
++        r.motion = fallback;
++        r.neural_granted = true;
++      } else {
++        r.neural_denied = in.wants_neural;
++      }
++      return r;
++    }
++
++    // Granted. Geometry motion owns the timeline; the estimated path is not
++    // allowed to run beside it under any configuration.
++    r.motion = MotionSource::Geometry;
++    r.frame_gen_multiplier = intent.multiplier();
++
++    if (in.neural_chain_ready && in.shared_neural_contract) {
++      r.rule = RuleId::FrameGenGeometryNeuralShared;
++      r.neural_granted = true;
++    } else {
++      r.rule = RuleId::FrameGenGeometryNeuralSuspended;
++      r.neural_granted = false;
++      r.neural_suspended_for_fg = in.wants_neural && in.neural_chain_ready;
++    }
++    return r;
++  }
++
++  // ---- No frame generation requested ------------------------------------
