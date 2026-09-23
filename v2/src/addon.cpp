@@ -1022,18 +1022,22 @@ extern "C" __declspec(dllexport) constexpr const char* NAME = "SECRET EMKO Neura
 extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION =
     "FiveM GTA V Legacy neural graphics control surface for RenoDX / ReShade";
 
+extern "C" __declspec(dllexport) bool AddonInit(HMODULE addon_module, HMODULE reshade_module) {
+  g_module = addon_module;
+  g_dir = ModuleDirectory(addon_module);
+  if (!reshade::register_addon(addon_module, reshade_module)) return false;
+  Attach();
+  return true;
+}
+
+extern "C" __declspec(dllexport) void AddonUninit(HMODULE addon_module, HMODULE) {
+  Detach();
+  reshade::unregister_addon(addon_module);
+}
+
 BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
-  switch (reason) {
-    case DLL_PROCESS_ATTACH:
-      g_module = h_module;
-      g_dir = ModuleDirectory(h_module);
-      if (!reshade::register_addon(h_module)) return FALSE;
-      Attach();
-      break;
-    case DLL_PROCESS_DETACH:
-      Detach();
-      reshade::unregister_addon(h_module);
-      break;
+  if (reason == DLL_PROCESS_ATTACH) {
+    DisableThreadLibraryCalls(h_module);
   }
   return TRUE;
 }
