@@ -403,6 +403,46 @@ function Ensure-IniValue([string]$Path,[string]$Section,[string]$Key,[string]$De
     }
 }
 
+function Get-SecretEmkoPersistentIniState([string]$Path) {
+    $state = [ordered]@{}
+    if (-not (Test-Path -LiteralPath $Path)) { return $state }
+
+    $keys = [ordered]@{
+        "ADDON" = @("DisabledAddons")
+        "SecretEMKO" = @(
+            "Profile","FrameGenerationPolicy","InstallMode","BackendsNextStart",
+            "BridgeSynth","BridgeSource","BridgeOfaGrid","BridgeOfaPerf","BridgeStage",
+            "BridgeMode","BridgeSkipGame","BridgeDred","BridgeSkipExe","BridgeUnwrap","BridgeHashOut"
+        )
+        "RenoDX.DLSS5" = @(
+            "EnableHooks","NeuralUplift","NREnableUpscaling","NRPreset","NRStyle",
+            "NRIntensity","NRGlobalTone","NRLocalTone","NRLocalStructure","NRSkinStructure",
+            "NRAutoMask","NRUICorrection","NRDiffuseWhiteNits","NRPaperWhiteScale",
+            "NRTransferStrength","NRColorStrength","NRDepthMode","NRMVecScaleX","NRMVecScaleY",
+            "NRToggleKey","NRScreenshotKey"
+        )
+    }
+
+    foreach ($section in $keys.Keys) {
+        foreach ($key in $keys[$section]) {
+            $value = Get-IniValue $Path $section $key
+            if ($null -ne $value) {
+                $state["$section::$key"] = [string]$value
+            }
+        }
+    }
+    return $state
+}
+
+function Restore-SecretEmkoPersistentIniState([string]$Path, [object]$State) {
+    if ($null -eq $State) { return }
+    foreach ($entry in $State.GetEnumerator()) {
+        $parts = [string]$entry.Key -split "::", 2
+        if ($parts.Count -ne 2) { continue }
+        Set-IniValue $Path $parts[0] $parts[1] ([string]$entry.Value)
+    }
+}
+
 function Set-BackendDisabledPolicy([string]$Path,[bool]$LoadBackends) {
     $current = Get-IniValue $Path "ADDON" "DisabledAddons"
     $entries = New-Object System.Collections.Generic.List[string]
@@ -697,7 +737,11 @@ try {
     Ok "Update backup root: $Backup"
 
     Step "Checking/installing ReShade"
+    # ReShade setup/update may rewrite ReShade.ini. Preserve the user-owned
+    # SECRET EMKO/RenoDX/backend-policy keys, then merge them back afterward.
+    $persistentIniState = Get-SecretEmkoPersistentIniState $reshadeIni
     Install-ReShadeHeadless $PluginsPath $neuralMode
+    Restore-SecretEmkoPersistentIniState $reshadeIni $persistentIniState
 
     if (-not $neuralMode) {
         Step "Removing Full Neural-only runtime files from active RP Visual environment"
