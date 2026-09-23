@@ -67,7 +67,7 @@ $fgBuilt = Get-ChildItem -LiteralPath $buildDir -Recurse -File -Filter "renodx-s
 if (-not $fgBuilt) { throw "renodx-secretemkofg.addon64 not found after build" }
 
 $distRoot = Join-Path $RepoRoot "dist"
-$stage = Join-Path $distRoot "SecretEMKO-NeuralGraphics-v2.0.0-rc5"
+$stage = Join-Path $distRoot "SecretEMKO-NeuralGraphics-v2.0.0-rc5.1"
 $zip = "$stage.zip"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 if (Test-Path $zip) { Remove-Item $zip -Force }
@@ -128,6 +128,24 @@ Copy-Item (Join-Path $RepoRoot "INSTALL_SECRET_EMKO.bat") (Join-Path $stage "INS
 Copy-Item (Join-Path $RepoRoot "INSTALL_SECRET_EMKO_FULL_NEURAL.bat") (Join-Path $stage "INSTALL_SECRET_EMKO_FULL_NEURAL.bat") -Force
 Copy-Item (Join-Path $RepoRoot "UNINSTALL_SECRET_EMKO.bat") (Join-Path $stage "UNINSTALL_SECRET_EMKO.bat") -Force
 
+# Build an offline-safe ReShade payload once in CI. End-user installation must
+# not depend on GitHub raw/release availability after the package is built.
+Write-Host "Preparing bundled ReShade shader/add-on payload..."
+$offlineSeed = Join-Path $WorkDir "reshade-offline-seed"
+if (Test-Path -LiteralPath $offlineSeed) { Remove-Item -LiteralPath $offlineSeed -Recurse -Force }
+New-Item -ItemType Directory -Path $offlineSeed -Force | Out-Null
+& (Join-Path $RepoRoot "tools\Update-ReShadeContent.ps1") -TargetDirectory $offlineSeed -Architecture 64 -SkipCoreCheck -SkipPresets
+
+$offlineRoot = Join-Path $stage "offline"
+New-Item -ItemType Directory -Path $offlineRoot -Force | Out-Null
+$seedShaders = Join-Path $offlineSeed "reshade-shaders"
+$seedAddon = Join-Path $offlineSeed "swapchain_override.addon64"
+if (-not (Test-Path -LiteralPath $seedShaders)) { throw "Offline ReShade shader payload was not produced" }
+if (-not (Test-Path -LiteralPath $seedAddon)) { throw "Offline swapchain_override.addon64 was not produced" }
+Copy-Item -LiteralPath $seedShaders -Destination (Join-Path $offlineRoot "reshade-shaders") -Recurse -Force
+Copy-Item -LiteralPath $seedAddon -Destination (Join-Path $offlineRoot "swapchain_override.addon64") -Force
+Write-Host "Offline ReShade payload bundled into release artifact"
+
 Copy-Item (Join-Path $src "LICENSE") (Join-Path $stage "licenses\RenoDX-LICENSE.txt") -Force
 
 $bridgeLicense = Join-Path $WorkDir "DLSS5-Bridge-LICENSE.txt"
@@ -144,7 +162,7 @@ Copy-Item $swapperLicense (Join-Path $stage "licenses\DLSS5-Swapper-LICENSE.txt"
 
 $manifest = [ordered]@{
     product = "SECRET EMKO Neural Graphics"
-    version = "2.0.0-rc5"
+    version = "2.0.0-rc5.1"
     built = (Get-Date).ToUniversalTime().ToString("o")
     renodx_commit = $Commit
     bridge_version = "1.4.13-pre8"
@@ -156,6 +174,8 @@ $manifest = [ordered]@{
     addon_sha256 = (Get-FileHash -LiteralPath (Join-Path $stage "SecretEMKO.addon64") -Algorithm SHA256).Hash
     fg_provider_sha256 = (Get-FileHash -LiteralPath (Join-Path $stage "SecretEMKO-FG.addon64") -Algorithm SHA256).Hash
     fg_provider_state = "discovery foundation; fail-closed until native motion/HUD inputs are verified"
+    reshade_content_mode = "bundled-offline-first"
+    reshade_runtime_network_required = $false
 }
 $manifest | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $stage "BUILD-MANIFEST.json") -Encoding UTF8
 
