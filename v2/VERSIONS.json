@@ -1,6 +1,6 @@
 {
   "product": "SECRET EMKO Neural Graphics",
-  "version": "2.0.0-rc4",
+  "version": "2.0.0-rc5",
   "verified_on": "2026-09-23",
   "support": {
     "platform": "Windows x64",
@@ -80,12 +80,32 @@
       "mode": "full_neural_only"
     },
     "secretemko_live_control": {
-      "version": "rc4",
+      "version": "rc5",
       "provider": "renodx-dlss5 v4.70 only",
       "provider_sha256": "D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C8593952",
       "safety": "exact size + SHA-256 + code fingerprints + ImGui dispatch identity; refuses unknown builds",
-      "behavior": "SECRET EMKO unregisters the verified RenoDX settings page, applies supported values through RenoDX's own callback, and requests immediate callback readback confirmation RC4 also exposes installed/armed/active pipeline states from bridge telemetry instead of treating file presence as proof of Neural Rendering.",
+      "behavior": "SECRET EMKO keeps verified RenoDX live control, exposes only three normal gaming looks (Natural/Cinematic/Detail) plus a realtime 0-2 strength control, and separates Frame Generation UI from provider readiness.",
       "provenance": "MIT adapter derived from rakanki911/DLSS5-Swapper commit 24bd2aca7a7451ce94e564366381e33cac9dcdba"
+    },
+    "frame_generation": {
+      "status": "ui_and_contract_only_until_native_provider_exists",
+      "normal_ui": [
+        "Off / 2x / 3x",
+        "Automatic or manual base FPS",
+        "HUD Protection Automatic / Strict / Off",
+        "Automatic pause in menus/loading/display changes"
+      ],
+      "provider_file": "SecretEMKO-FG.addon64",
+      "production_motion_policy": "geometry-derived GTA/FiveM motion vectors required; optical flow is not accepted as the production FG input path",
+      "required_inputs": [
+        "depth",
+        "dense motion vectors",
+        "HUD-less color",
+        "UI alpha or UI color+alpha",
+        "camera/frame constants",
+        "swap-chain/pacing control"
+      ],
+      "architecture_doc": "FRAMEGEN-NATIVE.md"
     }
   }
 }
