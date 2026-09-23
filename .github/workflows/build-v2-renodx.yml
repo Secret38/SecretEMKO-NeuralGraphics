@@ -134,7 +134,196 @@ jobs:
         shell: powershell
         run: |
           $addon = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3\SecretEMKO.addon64"
-          $exports = (& dumpbin /nologo /exports $addon | Out-String)
+          $dumpbin = Get-ChildItem "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe -File |
+            Where-Object { $_.FullName -match '\\Hostx64\\x64\\dumpbin\.exe
+            if ($exports -notmatch ("\b" + [regex]::Escape($symbol) + "\b")) {
+              throw "Missing exported add-on symbol: $symbol"
+            }
+          }
+
+      - name: Verify release files
+        shell: powershell
+        run: |
+          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3"
+          $required = @(
+            "SecretEMKO.addon64",
+            "dlss5-bridge.addon64",
+            "INSTALL_SECRET_EMKO.bat",
+            "INSTALL_SECRET_EMKO_FULL_NEURAL.bat",
+            "UNINSTALL_SECRET_EMKO.bat",
+            "tools\Install-SecretEMKO.ps1",
+            "tools\Uninstall-SecretEMKO.ps1",
+            "tools\Update-ReShadeContent.ps1",
+            "config\ReShade.SecretEMKO.ini",
+            "presets\Secret_Emko_Main.ini",
+            "presets\Secret_Emko_Stream.ini",
+            "MAIN-SYSTEM.json",
+            "COMPATIBILITY.md",
+            "README.md",
+            "VERSIONS.json",
+            "licenses\DLSS5-Swapper-LICENSE.txt"
+          )
+          foreach ($f in $required) {
+            $p = Join-Path $stage $f
+            if (-not (Test-Path $p)) { throw "Missing release file: $f" }
+          }
+          Get-FileHash "$stage\SecretEMKO.addon64" -Algorithm SHA256
+          Get-FileHash "$stage\dlss5-bridge.addon64" -Algorithm SHA256
+
+      - name: End-to-end Full Neural state persistence test
+        shell: powershell
+        run: |
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3").Path
+          $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Full Neural Persistence Test"
+          $app = Join-Path $fake "FiveM.app"
+          New-Item -ItemType Directory -Path $app -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $app "CitizenFX.ini") -Value "[Game]"
+
+          & (Join-Path $stage "tools\Install-SecretEMKO.ps1") -FiveMPath $fake -Mode FullNeural -ForceNeuralStack -SkipStreamline -NonInteractive
+
+          $plugins = Join-Path $app "plugins"
+          $ini = Join-Path $plugins "ReShade.ini"
+          $bridge = Join-Path $plugins "dlss5-bridge.cfg"
+          foreach ($name in @("SecretEMKO.addon64","renodx-dlss5.addon64","dlss5-bridge.addon64","nvngx_dlssnr.dll","nvngx_dlss.dll")) {
+            if (-not (Test-Path (Join-Path $plugins $name))) { throw "Missing Full Neural backend: $name" }
+          }
+
+          $consumerHash = (Get-FileHash (Join-Path $plugins "renodx-dlss5.addon64") -Algorithm SHA256).Hash
+          if ($consumerHash -ine "D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C8593952") {
+            throw "Installed RenoDX backend is not the live-adapter-compatible v4.70 binary"
+          }
+
+          $iniText = Get-Content -LiteralPath $ini -Raw
+          $iniText = [regex]::Replace($iniText, '(?m)^NRIntensity=.*$', 'NRIntensity=1.470000')
+          $iniText = [regex]::Replace($iniText, '(?m)^NeuralUplift=.*$', 'NeuralUplift=0')
+          $iniText = [regex]::Replace($iniText, '(?m)^BackendsNextStart=.*$', 'BackendsNextStart=0')
+          $iniText = [regex]::Replace(
+            $iniText,
+            '(?m)^DisabledAddons=.*$',
+            'DisabledAddons=SECRET EMKO RenoDX backend@renodx-dlss5.addon64,SECRET EMKO DLSS5 bridge@dlss5-bridge.addon64'
+          )
+          Set-Content -LiteralPath $ini -Value $iniText -Encoding UTF8
+
+          $bridgeText = Get-Content -LiteralPath $bridge -Raw
+          $bridgeText = [regex]::Replace($bridgeText, '(?m)^ofa_grid=.*$', 'ofa_grid=1')
+          Set-Content -LiteralPath $bridge -Value $bridgeText -Encoding UTF8
+
+          & (Join-Path $stage "tools\Install-SecretEMKO.ps1") -FiveMPath $fake -Mode FullNeural -ForceNeuralStack -SkipStreamline -NonInteractive
+
+          $after = Get-Content -LiteralPath $ini -Raw
+          if ($after -notmatch '(?m)^NRIntensity=1\.470000$') { throw "Installer reset NRIntensity" }
+          if ($after -notmatch '(?m)^NeuralUplift=0$') { throw "Installer re-enabled Neural Rendering" }
+          if ($after -notmatch '(?m)^BackendsNextStart=0$') { throw "Installer reset backend load policy" }
+          if ($after -notmatch 'renodx-dlss5\.addon64' -or $after -notmatch 'dlss5-bridge\.addon64') {
+            throw "Installer lost DisabledAddons backend policy"
+          }
+          if ((Get-Content -LiteralPath $bridge -Raw) -notmatch '(?m)^ofa_grid=1$') {
+            throw "Installer reset bridge quality state"
+          }
+
+          & (Join-Path $stage "tools\Uninstall-SecretEMKO.ps1") -FiveMPath $fake -NonInteractive
+
+      - name: End-to-end RP Visual isolation and restore test
+        shell: powershell
+        run: |
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3").Path
+          $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO FiveM Legacy Test"
+          $app = Join-Path $fake "FiveM.app"
+          $oldPlugins = Join-Path $app "plugins"
+
+          New-Item -ItemType Directory -Path $oldPlugins -Force | Out-Null
+          $citizen = "[Game]" + [Environment]::NewLine + "IVPath=C:\Fake\GTAV"
+          Set-Content -LiteralPath (Join-Path $app "CitizenFX.ini") -Value $citizen
+          Set-Content -LiteralPath (Join-Path $oldPlugins "existing-user-plugin.txt") -Value "preserve-me"
+          New-Item -ItemType Directory -Path (Join-Path $oldPlugins "reshade-shaders\Shaders") -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $oldPlugins "reshade-shaders\Shaders\UserCustom.fx") -Value "// user shader"
+
+          & (Join-Path $stage "tools\Install-SecretEMKO.ps1") -FiveMPath $fake -Mode RPVisual -NonInteractive
+
+          $active = Join-Path $app "plugins"
+          foreach ($name in @("dxgi.dll","ReShade.ini","Secret_Emko_Main.ini","Secret_Emko_Stream.ini")) {
+            if (-not (Test-Path (Join-Path $active $name))) { throw "Missing RP Visual output: $name" }
+          }
+          if (Test-Path (Join-Path $active "SecretEMKO.addon64")) { throw "External SECRET EMKO add-on must not be active in RP Visual mode" }
+          if (Test-Path (Join-Path $active "swapchain_override.addon64")) { throw "External swapchain add-on must not be active in RP Visual mode" }
+          if (Test-Path (Join-Path $active "existing-user-plugin.txt")) { throw "Old arbitrary plugin leaked into isolated active plugins folder" }
+          if (-not (Test-Path (Join-Path $active "reshade-shaders\Shaders\UserCustom.fx"))) { throw "Existing user shader library was not migrated" }
+
+          $ascii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes((Join-Path $active "dxgi.dll")))
+          if (-not $ascii.Contains("only limited add-on functionality")) { throw "RP Visual did not install the limited standard ReShade build" }
+
+          $backup = @(Get-ChildItem -LiteralPath $app -Directory -Filter "plugins.before-secret-emko.*")
+          if ($backup.Count -ne 1) { throw "Expected exactly one isolated original plugins backup" }
+          if (-not (Test-Path (Join-Path $backup[0].FullName "existing-user-plugin.txt"))) { throw "Original plugin was not preserved in backup" }
+
+          # Re-run the installer to verify idempotent in-place updates.
+          & (Join-Path $stage "tools\Install-SecretEMKO.ps1") -FiveMPath $fake -Mode RPVisual -NonInteractive
+          $backupAfterUpdate = @(Get-ChildItem -LiteralPath $app -Directory -Filter "plugins.before-secret-emko.*")
+          if ($backupAfterUpdate.Count -ne 1) { throw "Second install created another original plugins backup" }
+          if (-not (Test-Path (Join-Path $active "reshade-shaders\Shaders\UserCustom.fx"))) { throw "User shader missing after in-place update" }
+
+          & (Join-Path $stage "tools\Uninstall-SecretEMKO.ps1") -FiveMPath $fake -NonInteractive
+
+          if (-not (Test-Path (Join-Path $active "existing-user-plugin.txt"))) { throw "Original plugins folder was not restored by uninstall" }
+          if (Test-Path (Join-Path $active "Secret_Emko_Main.ini")) { throw "RP Visual environment remained active after restore" }
+
+      - name: End-to-end missing plugins creation test
+        shell: powershell
+        run: |
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3").Path
+          $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Missing Plugins Test"
+          $app = Join-Path $fake "FiveM.app"
+          New-Item -ItemType Directory -Path $app -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $app "CitizenFX.ini") -Value "[Game]"
+
+          $plugins = Join-Path $app "plugins"
+          if (Test-Path $plugins) { throw "Test precondition failed: plugins already exists" }
+
+          & (Join-Path $stage "tools\Install-SecretEMKO.ps1") -FiveMPath $fake -Mode RPVisual -NonInteractive
+
+          if (-not (Test-Path $plugins)) { throw "Installer did not create missing plugins folder" }
+          if (-not (Test-Path (Join-Path $plugins "dxgi.dll"))) { throw "ReShade missing from newly created plugins folder" }
+          if (-not (Test-Path (Join-Path $plugins "Secret_Emko_Main.ini"))) { throw "Main preset missing from newly created plugins folder" }
+
+          & (Join-Path $stage "tools\Uninstall-SecretEMKO.ps1") -FiveMPath $fake -NonInteractive
+
+          if (Test-Path $plugins) { throw "Uninstall should leave no active plugins folder when none existed before install" }
+
+      - name: Reject unsupported Full Neural hardware before modification
+        shell: powershell
+        run: |
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3").Path
+          $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Unsupported Neural Test"
+          $app = Join-Path $fake "FiveM.app"
+          $plugins = Join-Path $app "plugins"
+          New-Item -ItemType Directory -Path $plugins -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $app "CitizenFX.ini") -Value "[Game]"
+          Set-Content -LiteralPath (Join-Path $plugins "sentinel.txt") -Value "must-remain"
+
+          $failed = $false
+          try {
+            & (Join-Path $stage "tools\Install-SecretEMKO.ps1") -FiveMPath $fake -Mode FullNeural -NonInteractive
+          }
+          catch {
+            $failed = $true
+          }
+          if (-not $failed) { throw "Full Neural unexpectedly accepted unsupported runner hardware" }
+          if (-not (Test-Path (Join-Path $plugins "sentinel.txt"))) { throw "Installer modified plugins before hardware rejection" }
+          if (@(Get-ChildItem -LiteralPath $app -Directory -Filter "plugins.before-secret-emko.*").Count -ne 0) { throw "Installer isolated plugins before hardware rejection" }
+
+      - name: Upload v2 package
+        uses: actions/upload-artifact@v4
+        with:
+          name: SecretEMKO-NeuralGraphics-v2.0.0-rc3
+          path: |
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc3/**
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc3.zip
+          if-no-files-found: error
+ } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $dumpbin) { throw "dumpbin.exe was not found in the Visual Studio 2022 toolchain." }
+          $exports = (& $dumpbin.FullName /nologo /exports $addon | Out-String)
           foreach ($symbol in @("AddonInit","AddonUninit","NAME","DESCRIPTION")) {
             if ($exports -notmatch ("\b" + [regex]::Escape($symbol) + "\b")) {
               throw "Missing exported add-on symbol: $symbol"
