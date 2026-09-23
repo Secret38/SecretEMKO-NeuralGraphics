@@ -1,0 +1,361 @@
++  if (!in.wants_neural) {
++    r.rule = RuleId::Idle;
++    r.motion = MotionSource::None;
++    return r;
++  }
++
++  if (!in.neural_chain_ready) {
++    r.rule = RuleId::NeuralUnavailable;
++    r.neural_denied = true;
++    r.motion = MotionSource::None;
++    return r;
++  }
++
++  // Take the best available. Choosing geometry motion here when it exists also
++  // means enabling frame generation later does not have to tear the motion path
++  // down and build a different one.
++  const MotionSource source = BestNeuralMotion(in);
++  if (source == MotionSource::None) {
++    r.rule = RuleId::NeuralUnavailable;
++    r.neural_denied = true;
++    return r;
++  }
++
++  r.rule = RuleFor(source);
++  r.motion = source;
++  r.neural_granted = true;
++  return r;
++}
++
++const char* ToString(MotionSource source) {
++  switch (source) {
++    case MotionSource::None: return "none";
++    case MotionSource::OpticalFlow: return "estimated";
++    case MotionSource::CameraReprojected: return "camera";
++    case MotionSource::Hybrid: return "camera+residual";
++    case MotionSource::Geometry: return "geometry";
++  }
++  return "none";
++}
++
++const char* ToString(RuleId rule) {
++  switch (rule) {
++    case RuleId::Idle: return "idle";
++    case RuleId::NeuralUnavailable: return "neural-unavailable";
++    case RuleId::NeuralOnCompatibilityMotion: return "neural-compatibility";
++    case RuleId::NeuralOnCameraMotion: return "neural-camera";
++    case RuleId::NeuralOnHybridMotion: return "neural-hybrid";
++    case RuleId::NeuralOnGeometryMotion: return "neural-geometry";
++    case RuleId::FrameGenUnavailable: return "framegen-unavailable";
++    case RuleId::FrameGenGeometryNeuralSuspended: return "framegen-nr-suspended";
++    case RuleId::FrameGenGeometryNeuralShared: return "framegen-nr-shared";
++    case RuleId::FrameGenDeniedStrengthZero: return "framegen-needs-strength";
++  }
++  return "idle";
++}
++
++const char* Explain(RuleId rule) {
++  switch (rule) {
++    case RuleId::Idle:
++      return "Nothing is running. Move the strength slider above zero to switch "
++             "the image pass on.";
++    case RuleId::NeuralUnavailable:
++      return "The image pass cannot run in this installation.";
++    case RuleId::NeuralOnCompatibilityMotion:
++      return "Running on estimated motion. This is the compatible path and it "
++             "is why extra frames stay unavailable for now.";
++    case RuleId::NeuralOnCameraMotion:
++      return "Running on motion worked out from the camera. Exact for the "
++             "world; traffic and people are still approximated.";
++    case RuleId::NeuralOnHybridMotion:
++      return "Running on camera motion, with estimation filling in only where "
++             "something moved on its own.";
++    case RuleId::NeuralOnGeometryMotion:
++      return "Running on the game's own motion data.";
++    case RuleId::FrameGenUnavailable:
++      return "Extra frames stay off: the game's motion, depth and interface "
++             "data are not all confirmed yet.";
++    case RuleId::FrameGenGeometryNeuralSuspended:
++      return "Extra frames are running. The image pass is paused while they do, "
++             "because sharing the same motion data has not been confirmed.";
++    case RuleId::FrameGenGeometryNeuralShared:
++      return "Extra frames and the image pass are running together on the same "
++             "motion data.";
++    case RuleId::FrameGenDeniedStrengthZero:
++      return "Extra frames need the image pass. Raise strength above zero first.";
++  }
++  return "";
++}
++
++}  // namespace emko::core
+diff --git a/v3/src/core/arbitration.hpp b/v3/src/core/arbitration.hpp
+new file mode 100644
+index 0000000..f51d96c
+--- /dev/null
++++ b/v3/src/core/arbitration.hpp
+@@ -0,0 +1,112 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/arbitration.hpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ *
++ * Temporal arbitration.
++ *
++ * Two features want to own motion. v2 resolved that with mutating helpers that
++ * called each other, set three global ints between them, and then had the
++ * caller undo one of the writes - the kind of code where the only way to learn
++ * the rules is to simulate it in your head.
++ *
++ * v3 states the rules once, as a table over five booleans, and decides with a
++ * pure function. Every outcome carries a stable rule id so the interface can
++ * explain itself and a bug report can name the exact branch that fired.
++ *
++ * The substantive rule, unchanged from the product brief:
++ *
++ *   Estimated (optical-flow) motion may feed Neural Rendering, but it is never
++ *   accepted as an input for Frame Generation, and the two never run at once.
++ *   Geometry motion from the game may feed either, and both together once the
++ *   provider proves the shared contract is frame-aligned.
++ */
++
++#ifndef SECRETEMKO_CORE_ARBITRATION_HPP
++#define SECRETEMKO_CORE_ARBITRATION_HPP
++
++#include <cstdint>
++
++#include "core/capability.hpp"
++#include "core/intent.hpp"
++
++namespace emko::core {
++
++// The four ways motion can be obtained, in ascending order of trust.
++//
++// These are not grades of one thing. They fail in different places, which is
++// exactly why the generator may use only the last of them:
++//
++//   OpticalFlow       approximate everywhere; sees movers, invents detail
++//   CameraReprojected exact for the static world; blind to anything that moves
++//                     on its own, which it silently treats as scenery
++//   Hybrid            reprojection as the base, optical flow only as a residual
++//                     where the two disagree - better than either alone, and it
++//                     needs no shader patching at all
++//   Geometry          per-object, derived from the game's own transforms
++enum class MotionSource : std::uint8_t {
++  None = 0,
++  OpticalFlow = 1,
++  CameraReprojected = 2,
++  Hybrid = 3,
++  Geometry = 4,
++};
++
++// Is this source allowed to drive generated frames? Exactly one is, and saying
++// so in one place means the answer cannot drift between call sites.
++constexpr bool MayDriveFrameGeneration(MotionSource source) {
++  return source == MotionSource::Geometry;
++}
++
++// Stable identities for every possible outcome.
++enum class RuleId : std::uint8_t {
++  Idle = 0,                      // nothing requested
++  NeuralUnavailable,             // asked for it, the chain cannot provide it
++  NeuralOnCompatibilityMotion,   // optical flow only - the oldest path
++  NeuralOnCameraMotion,          // reprojected from depth
++  NeuralOnHybridMotion,          // reprojection plus an optical-flow residual
++  NeuralOnGeometryMotion,        // the target path
++  FrameGenUnavailable,           // asked for frames, inputs are not proven
++  FrameGenGeometryNeuralSuspended,
++  FrameGenGeometryNeuralShared,
++  FrameGenDeniedStrengthZero,    // frames requested while the image pass is off
++};
++
++// The five facts the rules actually depend on. Derived from the snapshot once,
++// so the rule table itself is trivially testable without building a graph.
++struct ArbitrationInput {
++  bool wants_neural = false;
++  bool wants_frame_gen = false;
++  bool neural_chain_ready = false;    // provider + runtimes usable
++  bool optical_flow_ready = false;
++  bool camera_motion_ready = false;   // depth + camera constants proven
++  bool geometry_motion_ready = false; // per-object transforms proven
++  bool frame_gen_ready = false;       // every FG input proven, runtime present
++  bool shared_neural_contract = false;  // one frame packet feeds both consumers
++};
++
++struct ArbitrationResult {
++  RuleId rule = RuleId::Idle;
++  MotionSource motion = MotionSource::None;
++  bool neural_granted = false;
++  int frame_gen_multiplier = 1;      // 1, 2 or 3
++  bool neural_suspended_for_fg = false;
++  bool frame_gen_denied = false;     // asked for, not granted
++  bool neural_denied = false;        // asked for, not granted
++};
++
++// Reduce a resolved snapshot to the five facts above.
++ArbitrationInput DeriveInput(const Intent& intent, const Snapshot& snap);
++
++// The whole policy, as one pure function.
++ArbitrationResult Arbitrate(const Intent& intent, const ArbitrationInput& in);
++
++const char* ToString(MotionSource source);
++const char* ToString(RuleId rule);
++
++// One sentence a player can act on. No jargon, no component names.
++const char* Explain(RuleId rule);
++
++}  // namespace emko::core
++
++#endif  // SECRETEMKO_CORE_ARBITRATION_HPP
+diff --git a/v3/src/core/backend.cpp b/v3/src/core/backend.cpp
+new file mode 100644
+index 0000000..ec0d7ca
+--- /dev/null
++++ b/v3/src/core/backend.cpp
+@@ -0,0 +1,168 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/backend.cpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "core/backend.hpp"
++
++#include <algorithm>
++
++namespace emko::core {
++
++const char* ToString(BackendKind kind) {
++  switch (kind) {
++    case BackendKind::None: return "none";
++    case BackendKind::RenoDx: return "RenoDX";
++    case BackendKind::Native: return "SECRET EMKO";
++  }
++  return "none";
++}
++
++bool MayDeclare(BackendKind kind) {
++  // Our own code is allowed to state what it does, because the statement and
++  // the implementation are in the same repository and change together. Anyone
++  // else's has to prove it, every session: their next release can remove a
++  // capability and will not tell us, and a stale "supports" flag is exactly how
++  // a feature ends up switched on and doing nothing.
++  return kind == BackendKind::Native;
++}
++
++std::size_t BackendCapabilities::count() const {
++  std::size_t n = 0;
++  for (bool flag : {second_instance, per_pixel_control_mask, separate_structure_tone,
++                    jitter_control, disable_game_taa, render_scale_below_one,
++                    frame_generation, reflex, live_parameter_change,
++                    reports_own_cost, reports_memory}) {
++    if (flag) ++n;
++  }
++  return n;
++}
++
++std::size_t BackendNeeds::count() const {
++  std::size_t n = 0;
++  for (bool flag : {second_instance, per_pixel_control_mask, jitter_control,
++                    render_scale_below_one, frame_generation}) {
++    if (flag) ++n;
++  }
++  return n;
++}
++
++std::string BackendShortfall::summary() const {
++  if (missing.empty()) return "Everything you have asked for is available.";
++
++  std::string text = "Not available with this backend: ";
++  for (std::size_t i = 0; i < missing.size(); ++i) {
++    if (i > 0) text += (i + 1 == missing.size()) ? ", and " : ", ";
++    text += missing[i];
++  }
++  return text + ".";
++}
++
++BackendShortfall Compare(const BackendCapabilities& have, const BackendNeeds& need) {
++  BackendShortfall shortfall;
++
++  // Phrased as what the player loses rather than as the name of a flag. The
++  // person reading this asked for a look, not for an API.
++  if (need.second_instance && !have.second_instance) {
++    shortfall.missing.emplace_back("a second pass, because the model cannot be "
++                                   "given two separate histories");
++  }
++  if (need.per_pixel_control_mask && !have.per_pixel_control_mask) {
++    shortfall.missing.emplace_back("per-material strength inside the model, "
++                                   "which is composited afterwards instead");
++  }
++  if (need.jitter_control && !have.jitter_control) {
++    shortfall.missing.emplace_back("the antialiasing benefit, because the "
++                                   "camera offset cannot be driven");
++  }
++  if (need.render_scale_below_one && !have.render_scale_below_one) {
++    shortfall.missing.emplace_back("rendering below native and reconstructing "
++                                   "back up");
++  }
++  if (need.frame_generation && !have.frame_generation) {
++    shortfall.missing.emplace_back("generated frames");
++  }
++  return shortfall;
++}
++
++namespace {
++
++// How many of the needed capabilities a backend actually covers.
++std::size_t Covered(const BackendCapabilities& have, const BackendNeeds& need) {
++  std::size_t n = 0;
++  if (need.second_instance && have.second_instance) ++n;
++  if (need.per_pixel_control_mask && have.per_pixel_control_mask) ++n;
++  if (need.jitter_control && have.jitter_control) ++n;
++  if (need.render_scale_below_one && have.render_scale_below_one) ++n;
++  if (need.frame_generation && have.frame_generation) ++n;
++  return n;
++}
++
++// Fewer layers between us and the model is better, because every layer is a
++// place where an input can fail to be forwarded and we are back to proving
++// things by watching.
++int Directness(BackendKind kind) {
++  switch (kind) {
++    case BackendKind::Native: return 2;
++    case BackendKind::RenoDx: return 1;
++    case BackendKind::None: return 0;
++  }
++  return 0;
++}
++
++}  // namespace
++
++BackendDescription Choose(const std::vector<BackendDescription>& available,
++                          const BackendNeeds& need) {
++  BackendDescription best;
++  std::size_t best_covered = 0;
++  std::size_t best_total = 0;
++
++  for (const BackendDescription& candidate : available) {
++    // Unproven is unusable, whatever it claims about itself. This is the same
++    // rule as everywhere else here and it is the one that must not be relaxed
++    // for convenience: a backend that has not been observed doing anything has
++    // not been observed doing anything.
++    if (!candidate.usable()) continue;
++
++    const std::size_t covered = Covered(candidate.caps, need);
++    const std::size_t total = candidate.caps.count();
++
++    if (best.kind == BackendKind::None || covered > best_covered ||
++        (covered == best_covered && total > best_total) ||
++        (covered == best_covered && total == best_total &&
++         Directness(candidate.kind) > Directness(best.kind))) {
++      best = candidate;
++      best_covered = covered;
++      best_total = total;
++    }
++  }
++  return best;
++}
++
++BackendCapabilities NativeTarget() {
++  // The specification the native path has to meet, in code rather than in a
++  // document, so that it is compiled and asserted rather than aspired to.
++  //
