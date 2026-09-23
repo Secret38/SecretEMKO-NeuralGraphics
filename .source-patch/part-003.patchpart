@@ -1,0 +1,329 @@
++   restarts is the difference between a diagnostic and a foundation.
++2. **Base-frame pacing.** The limiter frame generation will need is useful on its
++   own and verifiable now. Sleep to within a millisecond, spin the rest; a long
++   stall does not produce a burst of catch-up frames.
++3. **Honest reporting.** It publishes exactly which inputs it has proven and
++   explicitly masks off the ready bits it has not earned. `PublishStatus()`
++   clears those bits every frame, by construction. The interface cannot unlock
++   2x/3x on the strength of a wish.
++
++It also fixes a leak v2 had: `g_depth_state` was keyed by command list and never
++erased, so a long session with many deferred contexts grew it without bound and
++kept dangling keys. v3 handles `destroy_command_list`.
++
++---
++
++## Installation
++
++One entry point. Five phases, and the first mutation is in phase four:
++
++```
++DISCOVER   find the game, the GPU, what is already installed
++PREFLIGHT  check every precondition, print a verdict
++PLAN       decide the exact operations, print them
++APPLY      execute, journalling each one before it happens
++VERIFY     re-check from disk, independently of the plan
++```
++
++The user is not asked to choose between "RP Visual" and `Full Neural`. The
++installer works out what the machine can run, says what it chose and why, and
++`-Mode` remains for anyone who wants to override it.
++
++**Every operation is journalled before it happens**, with the SHA-256 of what it
++replaced and where that was backed up. A crash between two operations leaves a
++journal that still describes exactly what had already happened. Uninstall replays
++it backwards — an exact inverse rather than "move the folder back and hope".
++
++`-WhatIf` stops after PLAN. VERIFY deliberately re-reads from disk instead of
++consulting the plan it just ran, because a check that shares a data structure
++with the installer only proves the installer is self-consistent.
++
++---
++
++## What is verified, and what is not
++
++**Verified here.** `core/` and `app/` build clean under
++`-Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wsign-conversion`, and 57
++assertions pass — the evidence ladder, decay, dependency clamping, `AnyOf`
++groups, blocker propagation, the full arbitration sweep, the look curves, base-FPS
++arithmetic, planner purity, malformed-input handling, badge truthfulness and the
++kernel loop driven by fake probes and effectors.
++
++**Type-checked only.** `platform/`, `probe/`, `effect/`, `ui/`, `addon_main.cpp`
++and the input provider compile clean with `-Wall -Wextra` against stub headers in
++`tests/stubs/`, which catch syntax and type errors but are not the real Windows
++SDK, ReShade add-on API or ImGui. Real signatures must be confirmed by the MSVC
++build inside the RenoDX tree.
++
++**Not verified at all.** The PowerShell has not been executed — no PowerShell
++host was available where it was written. It needs a run against a real FiveM
++installation before release.
++
++**Not implemented.** Geometry motion injection, HUD-less capture, UI separation,
++frame constants and generated-frame delivery. Frame generation stays locked, and
++the code is structured so that it cannot be unlocked by accident.
++
++---
++
++## Attribution
++
++This control layer is SECRET EMKO's. Nothing under it is.
++
++- ReShade add-on API — Patrick Mours / crosire, BSD-3-Clause
++- RenoDX — Carlos Lopez Jr. and contributors, MIT
++- DLSS 5 Bridge — NIGos and contributors, MIT
++- The live-control adapter derives from the MIT DLSS5-Swapper UI bridge
++- NVIDIA DLSS and Streamline — NVIDIA, under NVIDIA's own terms
++
++The adapter remains fail-closed against one exact pinned build: size, SHA-256,
++code fingerprints and ImGui dispatch identity must all match. A different build
++falls back to restart-based configuration rather than guessing at offsets. That
++was the right call in v2 and it is unchanged.
++
++No PureDark code, binaries, authentication or paid assets are used. Public
++statements about GTA V's lack of engine motion vectors are used as architectural
++reference only.
+diff --git a/v3/docs/BUDGET.md b/v3/docs/BUDGET.md
+new file mode 100644
+index 0000000..6a8b588
+--- /dev/null
++++ b/v3/docs/BUDGET.md
+@@ -0,0 +1,448 @@
++# Performance, latency, stability, quality
++
++Four things get traded against each other, and improving one routinely damages
++another. This document states which is which, what each currently costs, and
++what the code does about it.
++
++The target is not "faster than the alternative". It is: **on every axis, not
++worse — and where a cost is inherent, say the number instead of hiding it.**
++
++## The order
++
++```
++1. Stability      never negotiable
++2. Quality        the picture is the product
++3. Performance    frames, within the budget quality leaves
++4. Latency        paid last, and stated openly
++```
++
++Stability is first in every profile: the alternative is a crash or a confidently
++wrong picture, and nobody would accept that trade knowingly. The three below it
++follow the priority the player picks — `Quality`, `Balanced` or `Performance` —
++and every derived number comes from that one choice rather than from a dozen
++sliders.
++
++Latency is last **by design, not by neglect**. The cost is real, it is computed,
++and it is printed next to the control that incurs it. Accepting it knowingly is
++a legitimate choice; discovering it afterwards is not.
++
++## Native resolution is the cheap win
++
++At render scale 1.0 the neural pass is not reconstructing anything — it is
++antialiasing. That is worth separating out because it changes what the work is:
++
++- it is the **best-looking** mode, since no pixels are being invented;
++- and it needs **none of the render-target resizing** reconstruction does.
++
++Everything that makes upscaling invasive — intercepting resource creation,
++rescaling scene targets, fixing post-process chains that assume fixed sizes — is
++absent at 1.0. What remains is jitter injection and switching the game's own
++temporal AA off. That is a small fraction of the work for most of the quality.
++
++So the `Quality` profile is both the best result and by far the least risky
++thing to build. Reconstruction at 0.667 and 0.5 remains available for players
++who need the headroom, and is the harder engineering.
++
++## Pacing
++
++A base rate that does not divide into the display rate produces judder that no
++frame counter can show. 70 fps doubled onto a 120 Hz panel repeats a frame
++roughly every seventh — the classic "high frame rate that still feels wrong".
++
++`EvaluatePacing()` names it and `PacingAdvice()` says which base rate would fix
++it. The reference configuration — 60 capped, doubled, onto 120 Hz — lands
++exactly, and the interface says so.
++
++```
++tests/test_budget.cpp
++  ok   sixty_doubled_onto_a_hundred_and_twenty_hertz_paces_exactly
++  ok   a_base_rate_that_does_not_divide_the_display_is_called_out
++  ok   producing_more_frames_than_the_display_can_show_is_called_out
++tests/test_planner.cpp
++  ok   a_hundred_and_twenty_hertz_at_native_with_a_sixty_cap_comes_out_right
++```
++
++---
++
++## 1. Latency
++
++This is the axis most likely to be quietly worse, so it comes first.
++
++### The inherent cost
++
++Frame generation makes input latency worse. Not through poor implementation —
++by construction.
++
++To display an interpolated frame between rendered frames N and N+1, N+1 must
++already exist. So the entire output sequence is delayed by one **rendered**
++frame:
++
++| Display | Multiplier | Base rate | Added lag |
++|---|---|---|---|
++| 144 Hz | 2x | 72 | **+13.9 ms** |
++| 144 Hz | 3x | 48 | **+20.8 ms** |
++| 120 Hz | 2x | 60 | +16.7 ms |
++| 60 Hz | 2x | 30 | +33.3 ms |
++
++Note the second row. **3x is worse for latency than 2x**, because it renders at
++a lower base rate. That is the opposite of what the numbers on the buttons
++suggest, and it is exactly the kind of thing a player should be told rather than
++left to feel.
++
++`EstimateLatency()` computes this, tests pin the arithmetic, and the Frames page
++prints it next to the 2x/3x buttons:
++
++```
+++14 ms input lag
++A rendered frame has to be held back before the extra ones can be shown.
++3x holds it longer than 2x does.
++```
++
++```
++tests/test_budget.cpp
++  ok   generated_frames_cost_one_rendered_frame_of_input_lag
++  ok   three_times_is_worse_for_latency_than_two_times
++  ok   the_latency_summary_says_a_number_rather_than_a_feeling
++```
++
++### What reduces it
++
++**Reflex is not optional.** NVIDIA pairs DLSS-G with Reflex precisely because
++the held frame has to be paid for somewhere, and Reflex pays for it by keeping
++the render queue short and starting each frame as late as it safely can. Frame
++generation without it is a straightforwardly worse experience. This is a Stage 4
++requirement, listed alongside the interop layer rather than after it.
++
++**Where the limiter waits matters.** A frame-rate cap that sleeps *before*
++present adds latency; one that sleeps *after* present, as ours does, delays the
++start of the next frame instead and is roughly neutral. The genuinely best
++position is before the game samples input, which a ReShade add-on cannot reach —
++so the limiter is as good as it can be from here, and not better. Said plainly
++because the difference is real.
++
++### The honest comparison
++
++On the current path — image pass only, no generation — **added latency is
++zero**, and the base-rate limiter can slightly reduce it by keeping the present
++queue from growing. There is no latency regression to explain today. The table
++above is what switching generation on will cost when Stage 4 lands.
++
++---
++
++## 2. Performance
++
++### What the pipeline costs per frame
++
++| Pass | Work | Estimated at 1440p |
++|---|---|---|
++| Camera detection, locked | one 16-float read | negligible |
++| Camera detection, searching | see below | throttled |
++| Reprojection | one unproject + one project per pixel | ~0.1–0.2 ms |
++| Validation | 18 texture samples per pixel at full rate | **~1–2 ms** |
++| Image pass | the provider's own cost | unchanged from v2 |
++
++The validation pass is the expensive one, and it is the first thing given up.
++
++### Camera detection
++
++The naive version evaluates every 16-byte offset of every mapped buffer, twice,
++each costing a matrix inverse, a frustum extraction, an apex solve, a field-of-
++view derivation and a depth-convention probe. At a few hundred buffer maps a
++frame that is not viable.
++
++Three things fix it.
++
++**A structural gate.** For a row-vector view-projection built as `view * proj`,
++the last column is the view matrix's third column — the camera's forward axis,
++and therefore a unit vector. Three multiplies and a compare reject almost
++everything before any of the expensive work happens.
++
++Measured, on the same synthetic drive:
++
++| Buffer | Offsets examined | Full evaluations | Share |
++|---|---|---|---|
++| 96 floats, a sixth matrices | 1,680 | 132 | 7.9% |
++| 1,024 floats, realistic | 20,240 | 92 | 0.45% |
++| 4,096 floats, realistic | 81,680 | 92 | **0.11%** |
++
++The camera is still found in all three.
++
++**Throttling.** While searching, the scan runs on one frame in four. The camera
++does not move far in 60 ms and the lock threshold counts scanned frames.
++
++**It stops.** Once locked, one offset in one buffer is read per frame and the
++broad scan is off entirely. Detection is a startup cost, not a running one.
++
++**And the gate can switch itself off.** An optimisation that silently rejects
++the thing being looked for is not an optimisation. A game that stores its matrix
++scaled differently fails the unit-length test — so if nothing has passed the
++gate in two seconds, the gate is assumed wrong, disabled, and the full scan
++runs. Tested both ways: the gate rejects a uniformly scaled matrix, gives up on
++itself, and then finds it.
++
++```
++tests/test_viewproj_detector.cpp
++  ok   on_a_realistic_buffer_the_gate_removes_over_ninety_nine_percent
++  ok   a_prefilter_that_would_hide_the_camera_switches_itself_off
++```
++
++Slot lookup also moved from a linear scan over up to 512 candidates to a hash
++map — that scan ran once per surviving candidate, per buffer, per frame.
++
++### The budget governor
++
++If our passes do not fit, quality is reduced in a defined order rather than
++frames being missed. A dropped frame is far more visible than a coarser
++confidence mask.
++
++```
++motion detail Full -> Half -> Quarter      (cheapest quality loss, spent first)
++3x -> 2x                                    (costs frames)
++2x -> off                                   (last resort)
++```
++
++The budget itself follows the chosen priority, because how much the pipeline may
++spend is exactly the question the priority answers:
++
++| Profile | Overhead allowed | Patience before degrading | Before recovering |
++|---|---|---|---|
++| Quality | 25% or 6 ms | 40 frames | 90 frames |
++| Balanced | 15% or 4 ms | 20 frames | 120 frames |
++| Performance | 10% or 2.5 ms | 10 frames | 180 frames |
++
++Whichever is smaller, so a player already at 20 fps is not charged a percentage
++of a long frame. The *order* of what gets given up does not change between
++profiles — mask detail before frames is the least-damage order regardless — only
++how much room there is and how quickly the governor acts.
++
++Asymmetric on purpose: a tier that changes several times a second looks worse
++than either tier.
++
++```
++tests/test_budget.cpp
++  ok   mask_detail_is_the_first_thing_given_up
++  ok   the_multiplier_is_only_dropped_once_detail_is_exhausted
++  ok   a_single_expensive_frame_changes_nothing
++  ok   recovery_is_slower_than_degradation
++  ok   a_low_frame_rate_uses_the_absolute_ceiling_not_a_percentage
++```
++
++---
++
++## 3. Stability
++
++### The crash that was in the code
++
++The detector read constant buffer contents at unmap, straight from the pointer
++the map call returned. If the notification arrives after the runtime has already
++released the mapping, that is an access violation — a crash in someone else's
