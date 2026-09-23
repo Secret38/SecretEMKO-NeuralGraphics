@@ -1028,7 +1028,7 @@ try {
     }
     if ($neuralMode) {
         Write-Host " Full Neural uses ReShade Full Add-on Support: use only where the server explicitly permits it." -ForegroundColor Yellow
-        Write-Host " Frame Generation remains gated until native GTA motion, HUD-less colour, UI and pacing inputs are validated." -ForegroundColor Yellow
+        Write-Host " Frame Generation remains gated until GTA shader motion, HUD-less colour, UI and pacing inputs are validated." -ForegroundColor Yellow
     } else {
         Write-Host " RP Visual uses standard ReShade only; individual server plugin policy can still block it." -ForegroundColor Yellow
     }
