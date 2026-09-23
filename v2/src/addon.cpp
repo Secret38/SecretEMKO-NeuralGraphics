@@ -29,7 +29,7 @@
 namespace {
 
 constexpr const char* kProduct = "SECRET EMKO Neural Graphics";
-constexpr const char* kVersion = "2.0.0-rc3";
+constexpr const char* kVersion = "2.0.0-rc4";
 constexpr const char* kProviderSection = "RenoDX.DLSS5";
 constexpr const char* kOwnSection = "SecretEMKO";
 
@@ -42,6 +42,32 @@ bool g_backends_next_start = true;
 bool g_backend_transition_pending = false;
 bool g_provider_restart_pending = false;
 std::string g_backend_status;
+
+// Full Neural runtime bootstrap. FiveM launches GTA V Legacy through a dynamic
+// FiveM.app\\data\\cache\\subprocess host. Upstream NGX resolves the DLSS SR
+// feature snippet relative to that host executable, while SECRET EMKO installs
+// the verified runtime beside the ReShade add-ons. Keep one plugin-local module
+// reference alive for the process and, for FiveM's disposable subprocess only,
+// relay the same file beside the host so both Windows module resolution and NGX's
+// file lookup see one deterministic runtime without asking the user to copy DLLs.
+HMODULE g_sr_runtime_pin = nullptr;
+std::filesystem::path g_host_dir;
+bool g_sr_runtime_source_ready = false;
+bool g_sr_runtime_module_ready = false;
+bool g_sr_runtime_host_ready = false;
+std::string g_sr_runtime_status;
+
+struct BridgeRuntimeSnapshot {
+  bool log_found = false;
+  bool delivery_confirmed = false;
+  bool synth_blocked = false;
+  bool optical_flow_seen = false;
+  bool depth_seen = false;
+  std::string state = "Waiting for bridge telemetry.";
+  std::string blocker;
+};
+BridgeRuntimeSnapshot g_bridge_runtime;
+ULONGLONG g_bridge_runtime_last_scan = 0;
 
 struct NeuralSettings {
   int enabled = 1;
@@ -134,6 +160,149 @@ std::filesystem::path ModuleDirectory(HMODULE module) {
 bool FileExists(const wchar_t* name) {
   std::error_code ec;
   return std::filesystem::exists(g_dir / name, ec);
+}
+
+bool PathExists(const std::filesystem::path& path) {
+  std::error_code ec;
+  return std::filesystem::exists(path, ec);
+}
+
+std::wstring LowerWide(std::wstring value) {
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
+  return value;
+}
+
+bool IsFiveMSubprocessHost(const std::filesystem::path& dir) {
+  const auto lower = LowerWide(dir.wstring());
+  return lower.find(L"\\fivem.app\\data\\cache\\subprocess") != std::wstring::npos;
+}
+
+void PrepareSyntheticSrRuntime() {
+  g_host_dir = ModuleDirectory(nullptr);
+  const auto source = g_dir / L"nvngx_dlss.dll";
+  const auto host = g_host_dir / L"nvngx_dlss.dll";
+
+  g_sr_runtime_source_ready = PathExists(source);
+  g_sr_runtime_module_ready = false;
+  g_sr_runtime_host_ready = false;
+
+  if (!g_sr_runtime_source_ready) {
+    g_sr_runtime_status = "DLSS SR runtime is missing from the SECRET EMKO plugins directory.";
+    return;
+  }
+
+  // Load by full path before the synthetic contract is created. Windows reuses
+  // an already-loaded module with the same base name, which gives NGX a stable
+  // process-local SR snippet even though FiveM's executable directory is dynamic.
+  g_sr_runtime_pin = LoadLibraryExW(
+      source.c_str(), nullptr,
+      LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+  if (g_sr_runtime_pin == nullptr)
+    g_sr_runtime_pin = LoadLibraryW(source.c_str());
+  g_sr_runtime_module_ready = g_sr_runtime_pin != nullptr;
+
+  std::error_code ec;
+  const bool same_dir = std::filesystem::equivalent(g_dir, g_host_dir, ec);
+  if (!ec && same_dir) {
+    g_sr_runtime_host_ready = true;
+  } else if (IsFiveMSubprocessHost(g_host_dir)) {
+    if (PathExists(host)) {
+      g_sr_runtime_host_ready = true;
+    } else {
+      // Prefer a hardlink: no duplicate 50+ MB runtime and both names refer to
+      // the exact same bytes. Cross-volume or policy failures fall back to a copy.
+      if (CreateHardLinkW(host.c_str(), source.c_str(), nullptr) != FALSE ||
+          CopyFileW(source.c_str(), host.c_str(), TRUE) != FALSE)
+        g_sr_runtime_host_ready = true;
+    }
+  } else {
+    // Outside FiveM's disposable subprocess tree we deliberately do not write
+    // next to an arbitrary executable. The full-path module preload still gives
+    // the process a deterministic runtime.
+    g_sr_runtime_host_ready = g_sr_runtime_module_ready;
+  }
+
+  if (g_sr_runtime_module_ready && g_sr_runtime_host_ready)
+    g_sr_runtime_status = "DLSS SR runtime prepared automatically for the synthetic FiveM contract.";
+  else if (g_sr_runtime_module_ready)
+    g_sr_runtime_status = "DLSS SR runtime is loaded, but the FiveM host relay could not be created.";
+  else
+    g_sr_runtime_status = "DLSS SR runtime file exists, but Windows could not load it.";
+}
+
+std::string ReadFileTail(const std::filesystem::path& path, std::streamoff max_bytes = 512 * 1024) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return {};
+  in.seekg(0, std::ios::end);
+  const std::streamoff size = in.tellg();
+  const std::streamoff start = size > max_bytes ? size - max_bytes : 0;
+  in.seekg(start, std::ios::beg);
+  std::string data(static_cast<size_t>(size - start), '\0');
+  if (!data.empty()) in.read(data.data(), static_cast<std::streamsize>(data.size()));
+  return data;
+}
+
+void RefreshBridgeRuntimeSnapshot(bool force = false) {
+  const ULONGLONG now = GetTickCount64();
+  if (!force && now - g_bridge_runtime_last_scan < 1000) return;
+  g_bridge_runtime_last_scan = now;
+
+  BridgeRuntimeSnapshot next;
+  const auto log = g_dir / L"dlss5-bridge.log";
+  if (!PathExists(log)) {
+    next.state = BridgeLoaded() ? "Bridge loaded; waiting for its runtime log." : "Bridge is not loaded.";
+    g_bridge_runtime = std::move(next);
+    return;
+  }
+
+  next.log_found = true;
+  std::string tail = ReadFileTail(log);
+  // Logs may contain previous sessions. Restrict decisions to the latest attach
+  // banner so an old successful run can never make a failed current run look active.
+  const auto attach = tail.rfind("dlss5-bridge ");
+  if (attach != std::string::npos) tail.erase(0, attach);
+
+  next.delivery_confirmed =
+      tail.find("frames delivered so far.") != std::string::npos;
+  next.optical_flow_seen =
+      tail.find("NVIDIA optical flow") != std::string::npos ||
+      tail.find("optical flow engine") != std::string::npos;
+  next.depth_seen =
+      tail.find("depth (") != std::string::npos &&
+      tail.find("bound") != std::string::npos;
+
+  const std::array<const char*, 7> blockers = {{
+      "CreateFeature failed",
+      "not delivering:",
+      "REFUSED",
+      "verdict: not viable",
+      "five consecutive D3D12 evaluates were refused",
+      "feature creation did not complete",
+      "could not load"
+  }};
+  size_t newest_blocker = std::string::npos;
+  const char* blocker_text = nullptr;
+  for (const char* marker : blockers) {
+    const size_t p = tail.rfind(marker);
+    if (p != std::string::npos && (newest_blocker == std::string::npos || p > newest_blocker)) {
+      newest_blocker = p;
+      blocker_text = marker;
+    }
+  }
+  next.synth_blocked = blocker_text != nullptr && !next.delivery_confirmed;
+  if (blocker_text) next.blocker = blocker_text;
+
+  if (next.delivery_confirmed)
+    next.state = "ACTIVE - bridge has confirmed delivered neural-path frames in this session.";
+  else if (next.synth_blocked)
+    next.state = "BLOCKED - the bridge reported a synthetic-contract failure; see dlss5-bridge.log.";
+  else if (g_sr_runtime_module_ready && BridgeLoaded() && RenoDxLoaded())
+    next.state = "ARMED - runtime, bridge and RenoDX are loaded; waiting for delivered-frame confirmation.";
+  else
+    next.state = "WAITING - the complete neural backend chain is not active yet.";
+
+  g_bridge_runtime = std::move(next);
 }
 
 bool ModuleLoaded(const wchar_t* name) {
@@ -584,12 +753,16 @@ void DrawHeader() {
   ImGui::TextDisabled("NEURAL GRAPHICS");
   const bool neural_stack = NeuralStackInstalled();
   ImGui::TextDisabled(neural_stack
-      ? "FiveM GTA V Legacy  |  Full Neural mode  |  v2.0 RC3"
-      : "FiveM GTA V Legacy  |  Visual compatibility mode  |  v2.0 RC3");
+      ? "FiveM GTA V Legacy  |  Full Neural mode  |  v2.0 RC4"
+      : "FiveM GTA V Legacy  |  Visual compatibility mode  |  v2.0 RC4");
   const float readiness = static_cast<float>(CountReady()) / 6.0f;
   char overlay[64];
-  sprintf_s(overlay, "Core stack %.0f%% ready", readiness * 100.0f);
+  sprintf_s(overlay, "Core stack %.0f%% installed", readiness * 100.0f);
   ImGui::ProgressBar(readiness, ImVec2(-1, 0), overlay);
+  if (neural_stack) {
+    RefreshBridgeRuntimeSnapshot();
+    ImGui::TextWrapped("Neural pipeline: %s", g_bridge_runtime.state.c_str());
+  }
   ImGui::EndChild();
   ImGui::PopStyleVar();
 
@@ -633,7 +806,7 @@ void DrawOverview() {
     ImGui::TableHeadersRow();
     StatusRow("ReShade Full Add-on", L"dxgi.dll", true, "Loader and native overlay host.");
     StatusRow("SECRET EMKO UI", L"SecretEMKO.addon64", true, "Profiles, diagnostics and policy.");
-    StatusRow("DLSS 5 Bridge", L"dlss5-bridge.addon64", neural_stack, neural_stack ? "Synthesizes the DLSS contract for GTA V Legacy D3D11." : "Not required in visual compatibility mode.");
+    StatusRow("DLSS 5 Bridge", L"dlss5-bridge.addon64", neural_stack, neural_stack ? "Synthetic GTA V Legacy D3D11 contract with internal NVIDIA Optical Flow fallback." : "Not required in visual compatibility mode.");
     StatusRow("RenoDX DLSS 5", L"renodx-dlss5.addon64", neural_stack, neural_stack ? "Neural Rendering consumer." : "Not installed in visual compatibility mode.");
     StatusRow("DLSS SR runtime", L"nvngx_dlss.dll", neural_stack, neural_stack ? "NGX DLSS runtime used by the synthetic contract." : "Not required in visual compatibility mode.");
     StatusRow("DLSS NR runtime", L"nvngx_dlssnr.dll", neural_stack, neural_stack ? "NVIDIA Neural Rendering model runtime." : "RTX 50 Neural runtime is intentionally absent.");
@@ -853,7 +1026,7 @@ void DrawBridge() {
     g_bridge.ofa_grid = vals[grid_idx];
     changed = true;
   }
-  Help("Grid 2 is the bridge default and recommended starting point. Grid 1 is reserved for Ultra Detail testing because it costs more.");
+  Help("Grid 1/2/4 use the bridge's internal NVIDIA Optical Flow path, so no separate ReShade motion-vector shader is required. Grid 2 is the recommended starting point. Grid 0 explicitly switches to a ReShade motion-vector provider.");
 
   const char* efforts[] = {"5 - Slow / quality", "10 - Medium", "20 - Fast"};
   int effort_idx = g_bridge.ofa_perf == 5 ? 0 : g_bridge.ofa_perf == 10 ? 1 : 2;
@@ -933,6 +1106,28 @@ void DrawDiagnostics() {
     }
     ImGui::EndTable();
   }
+
+  ImGui::Spacing();
+  ImGui::SeparatorText("Synthetic runtime bootstrap");
+  ImGui::Text("Plugin SR runtime: %s", g_sr_runtime_source_ready ? "present" : "missing");
+  ImGui::Text("SR module preloaded: %s", g_sr_runtime_module_ready ? "yes" : "no");
+  ImGui::Text("FiveM host relay: %s", g_sr_runtime_host_ready ? "ready" : "not ready");
+  ImGui::TextWrapped("%s", g_sr_runtime_status.c_str());
+  if (!g_host_dir.empty()) {
+    ImGui::TextDisabled("Current host directory:");
+    ImGui::TextWrapped("%ls", g_host_dir.c_str());
+  }
+
+  RefreshBridgeRuntimeSnapshot();
+  ImGui::Spacing();
+  ImGui::SeparatorText("Neural pipeline state");
+  ImGui::TextWrapped("%s", g_bridge_runtime.state.c_str());
+  ImGui::BulletText("Bridge telemetry: %s", g_bridge_runtime.log_found ? "available" : "waiting");
+  ImGui::BulletText("NVIDIA Optical Flow observed: %s", g_bridge_runtime.optical_flow_seen ? "yes" : "not confirmed yet");
+  ImGui::BulletText("Depth binding observed: %s", g_bridge_runtime.depth_seen ? "yes" : "not confirmed yet");
+  ImGui::BulletText("Delivered frames confirmed: %s", g_bridge_runtime.delivery_confirmed ? "yes" : "not yet");
+  if (!g_bridge_runtime.blocker.empty())
+    ImGui::TextWrapped("Latest blocking marker: %s", g_bridge_runtime.blocker.c_str());
 
   ImGui::Spacing();
   ImGui::SeparatorText("Expected logs after a test");
@@ -1044,6 +1239,8 @@ extern "C" __declspec(dllexport) bool AddonInit(HMODULE addon_module, HMODULE re
   g_module = addon_module;
   g_dir = ModuleDirectory(addon_module);
   if (!reshade::register_addon(addon_module, reshade_module)) return false;
+  PrepareSyntheticSrRuntime();
+  RefreshBridgeRuntimeSnapshot(true);
   Attach();
   return true;
 }
