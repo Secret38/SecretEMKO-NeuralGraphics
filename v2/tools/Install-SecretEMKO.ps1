@@ -443,6 +443,12 @@ function Restore-SecretEmkoPersistentIniState([string]$Path, [object]$State) {
     }
 }
 
+function Restore-SecretEmkoPersistentIniStateFromFile([string]$SourcePath, [string]$TargetPath) {
+    if (-not (Test-Path -LiteralPath $SourcePath)) { return }
+    $state = Get-SecretEmkoPersistentIniState $SourcePath
+    Restore-SecretEmkoPersistentIniState $TargetPath $state
+}
+
 function Set-BackendDisabledPolicy([string]$Path,[bool]$LoadBackends) {
     $current = Get-IniValue $Path "ADDON" "DisabledAddons"
     $entries = New-Object System.Collections.Generic.List[string]
@@ -914,8 +920,14 @@ try {
 
     # Final persistence barrier: later content/update stages must never reset
     # the user's Neural tuning or next-start backend policy on an in-place
-    # update of the same mode.
-    Restore-SecretEmkoPersistentIniState $reshadeIni $persistentIniState
+    # update of the same mode. Prefer the physical pre-update ReShade.ini backup
+    # as the authoritative source; it survives all intermediate setup tools.
+    $savedReShadeIni = Join-Path $Backup "ReShade.ini"
+    if ($managedExisting -and $priorState.install_mode -eq $installMode -and (Test-Path -LiteralPath $savedReShadeIni)) {
+        Restore-SecretEmkoPersistentIniStateFromFile $savedReShadeIni $reshadeIni
+    } else {
+        Restore-SecretEmkoPersistentIniState $reshadeIni $persistentIniState
+    }
     if ($neuralMode) {
         Set-IniValue $reshadeIni "SecretEMKO" "InstallMode" "full-neural"
         Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRToggleKey" "0"
