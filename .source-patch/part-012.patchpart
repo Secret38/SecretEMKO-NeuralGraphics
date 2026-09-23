@@ -1,0 +1,354 @@
++std::unique_ptr<emko::platform::CrashGuard> g_guard;
++std::int64_t g_started_ms = 0;
++std::unique_ptr<emko::ui::Shell> g_shell;
++emko::effect::ProviderEffector* g_provider = nullptr;
++
++emko::platform::Telemetry g_telemetry;
++HMODULE g_sr_runtime_pin = nullptr;
++
++// Frame-rate measurement, kept on the present thread so it costs one integer
++// compare per frame.
++std::int64_t g_fps_window_start = 0;
++std::uint64_t g_fps_window_frames = 0;
++
++// ---------------------------------------------------------------------------
++// Super-resolution runtime bootstrap
++// ---------------------------------------------------------------------------
++//
++// FiveM launches the game through a disposable copy of itself under
++// data\cache\subprocess. NVIDIA's loader resolves its feature snippet relative
++// to the *host executable*, while we install the runtime beside the add-ons.
++// So: pin the module by full path, and - only inside that disposable tree -
++// place a hard link beside the host so both lookups find the same bytes.
++//
++// A hard link rather than a copy because the file is tens of megabytes and two
++// names for one inode cannot drift apart. Outside FiveM's own cache directory
++// we write nothing: dropping a DLL beside an unrelated executable is not a
++// thing a graphics tool should ever do.
++void PrepareSuperResolutionRuntime(emko::app::CapabilityGraph& graph,
++                                   emko::app::Timestamp now) {
++  const auto source = g_dir / L"nvngx_dlss.dll";
++  if (!emko::platform::StatFile(source).exists) return;
++
++  g_sr_runtime_pin = LoadLibraryExW(
++      source.c_str(), nullptr,
++      LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
++  if (g_sr_runtime_pin == nullptr) g_sr_runtime_pin = LoadLibraryW(source.c_str());
++
++  if (g_sr_runtime_pin == nullptr) {
++    graph.observe(emko::core::CapId::DlssSrRuntime,
++                  emko::core::BlockerEvidence(
++                      now, emko::core::BlockerCode::ModuleLoadFailed,
++                      "the super-resolution runtime is present but Windows "
++                      "refused to load it"));
++    return;
++  }
++
++  const auto host_dir = emko::platform::ModuleDirectory(nullptr);
++  std::error_code ec;
++  if (std::filesystem::equivalent(g_dir, host_dir, ec) && !ec) return;
++  if (!emko::platform::HostIsFiveMSubprocess(host_dir)) return;
++
++  const auto host_copy = host_dir / L"nvngx_dlss.dll";
++  if (emko::platform::StatFile(host_copy).exists) return;
++  if (CreateHardLinkW(host_copy.c_str(), source.c_str(), nullptr) == FALSE) {
++    CopyFileW(source.c_str(), host_copy.c_str(), TRUE);
++  }
++}
++
++// ---------------------------------------------------------------------------
++// Events
++// ---------------------------------------------------------------------------
++
++void OnPresent(reshade::api::command_queue*, reshade::api::swapchain* swapchain,
++               const reshade::api::rect*, const reshade::api::rect*, uint32_t,
++               const reshade::api::rect*) {
++  auto* block = g_telemetry.block();
++  if (block == nullptr) return;
++
++  const std::int64_t now = emko::platform::NowMs();
++  block->presented.bump(now);
++
++  if (g_fps_window_start == 0) g_fps_window_start = now;
++  ++g_fps_window_frames;
++
++  // Half-second windows: long enough to be stable, short enough that the
++  // automatic base-rate calculation reacts before a player notices.
++  const std::int64_t elapsed = now - g_fps_window_start;
++  if (elapsed >= 500) {
++    const double fps = static_cast<double>(g_fps_window_frames) * 1000.0 /
++                       static_cast<double>(elapsed);
++    block->measured_fps_x100.store(static_cast<std::int32_t>(fps * 100.0),
++                                   std::memory_order_relaxed);
++    g_fps_window_start = now;
++    g_fps_window_frames = 0;
++  }
++
++  (void)swapchain;
++}
++
++void OnReShadeOverlay(reshade::api::effect_runtime* runtime) {
++  if (!g_kernel) return;
++  const auto now = static_cast<emko::app::Timestamp>(emko::platform::NowMs());
++
++  // The live-control adapter can only reach the provider's settings from inside
++  // an ImGui frame, so it is pumped here rather than from the effector.
++  if (g_provider != nullptr) g_provider->pump(runtime, now);
++
++  // ReShade sizes its ImGui context to the swap chain, which makes this the
++  // cheapest reliable source for the render target's shape. The input provider
++  // uses it to tell the player's camera apart from a reflection camera.
++  const ImGuiIO& io = ImGui::GetIO();
++  if (io.DisplaySize.x > 0.0f && io.DisplaySize.y > 0.0f) {
++    g_kernel->facts().display_aspect = io.DisplaySize.x / io.DisplaySize.y;
++  }
++
++  // Once the session has run long enough to be a session, the crash counter is
++  // cleared. A crash after this says something different about our code than a
++  // crash at startup, and treating them the same would let one bad afternoon
++  // leave someone permanently in safe mode.
++  if (g_guard && !g_guard->established() && g_started_ms != 0 &&
++      emko::platform::NowMs() - g_started_ms >= emko::core::kSessionEstablishedMs) {
++    g_guard->establish();
++  }
++
++  g_kernel->tick(now);
++}
++
++void DrawOverlay(reshade::api::effect_runtime* runtime) {
++  if (!g_shell) return;
++  g_shell->draw(runtime, static_cast<emko::app::Timestamp>(emko::platform::NowMs()));
++}
++
++void BuildKernel() {
++  using namespace emko;
++
++  g_kernel = std::make_unique<app::Kernel>();
++
++  auto live_shared = std::make_shared<probe::LiveControlProbe::Shared>();
++
++  g_kernel->add_probe(std::make_unique<probe::InstallationProbe>(g_dir));
++  g_kernel->add_probe(std::make_unique<probe::ModuleProbe>());
++  g_kernel->add_probe(std::make_unique<probe::TelemetryProbe>());
++  g_kernel->add_probe(std::make_unique<probe::VideoMemoryProbe>());
++  g_kernel->add_probe(std::make_unique<probe::BridgeLogProbe>(g_dir));
++  g_kernel->add_probe(std::make_unique<probe::LiveControlProbe>(live_shared));
++
++  auto provider = std::make_unique<effect::ProviderEffector>(live_shared);
++  g_provider = provider.get();
++  g_kernel->add_effector(std::move(provider));
++  g_kernel->add_effector(std::make_unique<effect::BridgeEffector>(g_dir));
++  g_kernel->add_effector(std::make_unique<effect::LoadPolicyEffector>());
++  g_kernel->add_effector(std::make_unique<effect::FrameGenEffector>());
++
++  g_kernel->set_intent_store(std::make_unique<platform::ReShadeIntentStore>());
++  g_kernel->set_journal(std::make_unique<platform::FileJournal>(g_dir));
++
++  g_shell = std::make_unique<ui::Shell>(*g_kernel, g_dir);
++
++  // The guard's verdict reaches the kernel as an observation, like everything
++  // else, and the planner turns it into a sentence on screen.
++  g_guard = std::make_unique<platform::CrashGuard>(g_dir);
++  const core::CrashState crash = g_guard->begin();
++  g_started_ms = platform::NowMs();
++
++  g_kernel->facts().startup = core::DecideStartup(crash);
++  g_kernel->facts().safety =
++      core::EffectivePolicy(g_kernel->facts().safety, g_kernel->facts().startup);
++}
++
++}  // namespace
++
++extern "C" __declspec(dllexport) constexpr const char* NAME = kProduct;
++extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION =
++    "Neural graphics control surface: three looks, one strength control, "
++    "optional extra frames. Everything else is managed automatically.";
++
++extern "C" __declspec(dllexport) bool AddonInit(HMODULE addon_module,
++                                                HMODULE reshade_module) {
++  g_module = addon_module;
++  g_dir = emko::platform::ModuleDirectory(addon_module);
++
++  if (!reshade::register_addon(addon_module, reshade_module)) return false;
++
++  // We are the producer of the shared block: the input provider attaches to it.
++  g_telemetry.open(/*create=*/true);
++
++  BuildKernel();
++
++  const auto now = static_cast<emko::app::Timestamp>(emko::platform::NowMs());
++  PrepareSuperResolutionRuntime(g_kernel->graph(), now);
++  g_kernel->start(now);
++
++  reshade::register_event<reshade::addon_event::present>(OnPresent);
++  reshade::register_event<reshade::addon_event::reshade_overlay>(OnReShadeOverlay);
++  reshade::register_overlay(kProduct, DrawOverlay);
++
++  reshade::log::message(reshade::log::level::info,
++                        (std::string("SECRET EMKO ") + kVersion + " attached").c_str());
++  return true;
++}
++
++extern "C" __declspec(dllexport) void AddonUninit(HMODULE addon_module, HMODULE) {
++  reshade::unregister_overlay(kProduct, DrawOverlay);
++  reshade::unregister_event<reshade::addon_event::reshade_overlay>(OnReShadeOverlay);
++  reshade::unregister_event<reshade::addon_event::present>(OnPresent);
++
++  // Reaching here at all is what "clean shutdown" means, so the marker goes
++  // first: anything that stops the process before this point is an unclean exit
++  // by definition, which is exactly what makes the guard work.
++  if (g_guard) g_guard->finish();
++  g_guard.reset();
++
++  g_shell.reset();
++  g_provider = nullptr;
++  g_kernel.reset();
++  g_telemetry.close();
++
++  // The pinned runtime is deliberately not freed. Other components may still
++  // hold references to it, and the process is going away anyway.
++  reshade::unregister_addon(addon_module);
++}
++
++BOOL APIENTRY DllMain(HMODULE, DWORD, LPVOID) {
++  // Nothing happens under the loader lock. All real work is deferred to
++  // AddonInit, which ReShade calls at a point where file and config access is
++  // safe.
++  return TRUE;
++}
+diff --git a/v3/src/app/kernel.cpp b/v3/src/app/kernel.cpp
+new file mode 100644
+index 0000000..4b88a87
+--- /dev/null
++++ b/v3/src/app/kernel.cpp
+@@ -0,0 +1,165 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - app/kernel.cpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "app/kernel.hpp"
++
++#include <limits>
++#include <string>
++#include <utility>
++
++namespace emko::app {
++
++Kernel::Kernel() = default;
++Kernel::~Kernel() = default;
++
++void Kernel::add_probe(std::unique_ptr<Probe> probe) {
++  probes_.push_back(std::move(probe));
++  probe_last_run_.push_back(std::numeric_limits<Timestamp>::min() / 4);
++}
++
++void Kernel::add_effector(std::unique_ptr<Effector> effector) {
++  effectors_.push_back(std::move(effector));
++}
++
++void Kernel::set_intent_store(std::unique_ptr<IntentStore> store) {
++  store_ = std::move(store);
++}
++
++void Kernel::set_journal(std::unique_ptr<Journal> journal) {
++  journal_ = std::move(journal);
++}
++
++void Kernel::start(Timestamp now) {
++  if (store_) intent_ = store_->load();
++  intent_.clamp();
++  governor_ = core::BudgetGovernor(core::PolicyFor(intent_.priority));
++  started_ = true;
++  force_apply_ = true;
++  tick(now);
++}
++
++void Kernel::commit(const core::Intent& next, Timestamp now) {
++  const core::Priority before = intent_.priority;
++  intent_ = next;
++  intent_.clamp();
++  // The budget policy is derived from what the player said to protect, so a
++  // change of priority re-arms the governor rather than leaving it applying the
++  // old profile's patience.
++  if (intent_.priority != before) {
++    governor_ = core::BudgetGovernor(core::PolicyFor(intent_.priority));
++  }
++  if (store_) store_->save(intent_);
++  // A user-visible change must take effect on this tick, not on whatever
++  // schedule the probes happen to be on.
++  force_apply_ = true;
++  tick(now);
++}
++
++void Kernel::run_probes(Timestamp now) {
++  for (std::size_t i = 0; i < probes_.size(); ++i) {
++    Probe& probe = *probes_[i];
++    const core::Millis interval = probe.interval();
++    if (!force_apply_ && interval > 0 && now - probe_last_run_[i] < interval) continue;
++    probe_last_run_[i] = now;
++    probe.sample(graph_, facts_, now);
++    ++stats_.probe_samples;
++  }
++}
++
++void Kernel::apply_plan(Timestamp now, bool force) {
++  const core::Plan::Applied desired = plan_.applied();
++  if (!force && last_applied_.has_value() && last_applied_->same_as(desired)) {
++    return;
++  }
++
++  reports_.clear();
++  for (auto& effector : effectors_) {
++    ApplyReport report = effector->apply(plan_, graph_, now);
++    if (report.result != ApplyResult::Unchanged) {
++      reports_.emplace_back(effector->name(), report);
++      if (journal_ && report.result == ApplyResult::Rejected) {
++        journal_->write(core::Severity::Warning,
++                        std::string(effector->name()) + ": " + report.detail);
++      }
++    }
++  }
++
++  last_applied_ = desired;
++  stats_.last_apply_at = now;
++  ++stats_.plans_applied;
++}
++
++void Kernel::log_transitions(const core::StatusReport& before,
++                             const core::StatusReport& after) {
++  if (!journal_) return;
++  if (before.neural.badge != after.neural.badge) {
++    journal_->write(after.neural.severity,
++                    std::string("Neural Rendering: ") +
++                        core::ToString(before.neural.badge) + " -> " +
++                        core::ToString(after.neural.badge) +
++                        (after.neural.detail.empty() ? ""
++                                                     : " (" + after.neural.detail + ")"));
++  }
++  if (before.frame_gen.badge != after.frame_gen.badge) {
++    journal_->write(after.frame_gen.severity,
++                    std::string("Frame Generation: ") +
++                        core::ToString(before.frame_gen.badge) + " -> " +
++                        core::ToString(after.frame_gen.badge) +
++                        (after.frame_gen.detail.empty()
++                             ? ""
++                             : " (" + after.frame_gen.detail + ")"));
++  }
++}
++
++void Kernel::tick(Timestamp now) {
++  if (!started_) start(now);
++
++  const bool force = force_apply_;
++
++  // 1. Read the world.
++  run_probes(now);
++
++  // 2. Let the graph draw its own conclusions, with everything stale expired.
++  snapshot_ = core::MakeSnapshot(graph_, now);
++
++  // 2b. Judge what the pipeline cost last frame, and feed the verdict forward
++  //     as an observation. Done before planning so the plan reflects it, and
++
