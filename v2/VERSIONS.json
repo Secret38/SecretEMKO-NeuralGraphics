@@ -88,7 +88,7 @@
       "provenance": "MIT adapter derived from rakanki911/DLSS5-Swapper commit 24bd2aca7a7451ce94e564366381e33cac9dcdba"
     },
     "frame_generation": {
-      "status": "ui_and_contract_only_until_native_provider_exists",
+      "status": "discovery_provider_built; fail-closed until shader-injected motion, HUD-less/UI and Streamline delivery are verified",
       "normal_ui": [
         "Off / 2x / 3x",
         "Automatic or manual base FPS",
@@ -96,7 +96,7 @@
         "Automatic pause in menus/loading/display changes"
       ],
       "provider_file": "SecretEMKO-FG.addon64",
-      "production_motion_policy": "geometry-derived GTA/FiveM motion vectors required; optical flow is not accepted as the production FG input path",
+      "production_motion_policy": "shader-injected GTA/FiveM motion vectors required; Optical Flow is compatibility NR only and is mutually exclusive with native/shader-motion Frame Generation",
       "required_inputs": [
         "depth",
         "dense motion vectors",
@@ -105,7 +105,13 @@
         "camera/frame constants",
         "swap-chain/pacing control"
       ],
-      "architecture_doc": "FRAMEGEN-NATIVE.md"
+      "architecture_doc": "FRAMEGEN-NATIVE.md",
+      "coexistence": "Neural Rendering and Frame Generation are not inherently exclusive. RC5 only forbids the synthetic Optical-Flow compatibility path from running together with Frame Generation. Shared NR+FG is allowed only after the provider reports a frame-aligned shared NR contract.",
+      "provider_exports": [
+        "SECRET_EMKO_FG_ABI",
+        "SecretEMKO_FG_GetStatus"
+      ],
+      "provider_readiness": "UI unlock requires provider-reported frame-generation readiness plus shader motion, HUD-less color and UI readiness; file/module presence alone never unlocks 2x/3x."
     }
   }
 }
