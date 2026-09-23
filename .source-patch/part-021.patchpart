@@ -1,0 +1,321 @@
++  mean_vertices += (static_cast<double>(vertices) - mean_vertices) / n;
++}
++
++double ShaderStats::presence(std::uint64_t frames_observed) const {
++  if (frames_observed == 0) return 0.0;
++  return static_cast<double>(frames) / static_cast<double>(frames_observed);
++}
++
++bool ShaderStats::seen_recently(std::uint64_t now, std::uint64_t within) const {
++  return last_frame != 0 && now >= last_frame && (now - last_frame) <= within;
++}
++
++StructureVerdict ClassifyStructure(const ShaderStats& stats,
++                                   std::uint64_t frames_observed) {
++  StructureVerdict verdict;
++  if (frames_observed == 0 || stats.frames == 0) return verdict;
++
++  const double presence = stats.presence(frames_observed);
++  const double blended = static_cast<double>(stats.frames_blended) /
++                         static_cast<double>(stats.frames);
++  const double tested = static_cast<double>(stats.frames_depth_tested) /
++                        static_cast<double>(stats.frames);
++  const double depth = static_cast<double>(stats.frames_depth_written) /
++                       static_cast<double>(stats.frames);
++  const double gbuffer = static_cast<double>(stats.frames_multi_target) /
++                         static_cast<double>(stats.frames);
++
++  // No depth at any point is interface. It is the same signal the frame
++  // segmenter uses and it is the only one here that cannot be faked: interface
++  // is drawn in screen space, in order, and the order is the whole point.
++  if (tested < 0.01 && depth < 0.01 && gbuffer < 0.01) {
++    verdict.structure = Structure::Interface;
++    verdict.confidence = 0.9f;
++    verdict.because = "never touches depth at all, which only interface manages";
++    return verdict;
++  }
++
++  // Blended, depth-tested, not depth-writing: glass, foliage, particles.
++  // Separable from both the world and from subjects, but not from each other,
++  // which is why this is a group and not a material. Tests depth but does not
++  // write it: it has to be hidden by the world, and
++  // must not hide the transparent surface behind it. That pair of requirements
++  // is what a transparent surface is.
++  if (blended > 0.8 && tested > 0.8 && depth < 0.2) {
++    verdict.structure = Structure::Transparent;
++    verdict.confidence = 0.85f;
++    verdict.because = "blended and occluded by the world without writing depth";
++    return verdict;
++  }
++
++  // Ubiquitous, depth-writing and filling several targets at once. Nothing but
++  // the world does all three, and the world does all three always.
++  if (presence >= 0.9 && depth > 0.8 && gbuffer > 0.5) {
++    verdict.structure = Structure::World;
++    verdict.confidence = 0.95f;
++    verdict.because = "in every frame, writes depth, fills a G-buffer";
++    return verdict;
++  }
++
++  // Opaque geometry that comes and goes: a person, a car, something held. Which
++  // of those it is cannot be read from here, and this deliberately does not
++  // guess - the verdict is the structural class, and the semantic one comes
++  // from the catalogue or not at all.
++  if (presence <= 0.6 && depth > 0.5) {
++    verdict.structure = Structure::Subject;
++    verdict.confidence = 0.8f;
++    verdict.because = "opaque geometry that is not always on screen";
++    return verdict;
++  }
++
++  // The gap between the two presence thresholds is left Unknown on purpose.
++  // Pushing a shader to whichever side is closer would turn a band of genuine
++  // uncertainty into a confident answer, and every wrong answer here is a seam
++  // through something.
++  verdict.structure = Structure::Unknown;
++  verdict.confidence = 0.3f;
++  verdict.because = "behaves like neither the world nor a subject";
++  return verdict;
++}
++
++void MaterialCatalogue::set_build(std::string identity) {
++  if (identity == build_) return;
++
++  // A catalogue gathered against one build applied to another is a table
++  // applied to different shaders that happen to share a number. Everything
++  // goes, including calibrations - asking the player again is a small cost, and
++  // holding a face at the wrong weight is not.
++  shaders_.clear();
++  frames_observed_ = 0;
++  last_frame_ = 0;
++  build_ = std::move(identity);
++}
++
++void MaterialCatalogue::observe(std::uint64_t shader, std::uint64_t frame,
++                                std::uint32_t vertices, bool blended,
++                                bool depth_tested, bool depth_written,
++                                bool multi_target) {
++  if (shader == 0) return;  // an unidentified shader is not a shader
++  shaders_[shader].stats.record(frame, vertices, blended, depth_tested, depth_written,
++                                multi_target);
++}
++
++void MaterialCatalogue::end_frame(std::uint64_t frame) {
++  if (frame == last_frame_) return;
++  last_frame_ = frame;
++  ++frames_observed_;
++
++  if (frames_observed_ < config_.frames_before_deciding) return;
++
++  // Walking a few thousand shaders on the present thread at frame rate, to
++  // reach an answer that moves over minutes, is the kind of cost that does not
++  // show up in a profile as one expensive thing and does show up as a frame
++  // time that is slightly worse than it was.
++  if (config_.frames_between_derivations > 1 &&
++      (frames_observed_ % config_.frames_between_derivations) != 0) {
++    return;
++  }
++
++  // Re-derive the structural tier. Cheap, and it has to be re-done rather than
++  // decided once: a shader's presence statistic only becomes meaningful with
++  // more frames, and a verdict taken early would never be revisited.
++  for (auto& [hash, entry] : shaders_) {
++    (void)hash;
++
++    // Knowledge is never overwritten by inference. A player who has said what
++    // something is has said it, and a shipped table was gathered with ground
++    // truth this code does not have.
++    if (entry.assignment.source == AssignmentSource::Calibrated ||
++        entry.assignment.source == AssignmentSource::Shipped) {
++      continue;
++    }
++
++    const StructureVerdict verdict = ClassifyStructure(entry.stats, frames_observed_);
++    if (!verdict.settled()) {
++      entry.assignment = Assignment{};
++      continue;
++    }
++
++    // Only where the structural tier is sufficient on its own. World is the one
++    // case: it maps to exactly one material and nothing else behaves that way.
++    // Subject does not - it could be skin, hair, clothing, a car or a weapon,
++    // and picking one would be inventing the answer.
++    if (verdict.structure == Structure::World) {
++      entry.assignment = Assignment{Material::Environment, AssignmentSource::Derived,
++                                    verdict.because};
++    } else {
++      entry.assignment = Assignment{};
++    }
++  }
++}
++
++bool MaterialCatalogue::assign(std::uint64_t shader, Material material,
++                               AssignmentSource source, const std::string& build) {
++  if (shader == 0) return false;
++  if (source != AssignmentSource::Calibrated && source != AssignmentSource::Shipped) {
++    return false;
++  }
++
++  // An entry carries the build it was gathered against, and a mismatch is
++  // refused rather than accepted with a warning. This is the same rule the live
++  // control adapter runs on and for the same reason.
++  if (!build.empty() && !build_.empty() && build != build_) return false;
++
++  Entry& entry = shaders_[shader];
++  entry.assignment = Assignment{material, source,
++                                source == AssignmentSource::Shipped
++                                    ? "shipped for this game build"
++                                    : "set during calibration"};
++  return true;
++}
++
++Assignment MaterialCatalogue::lookup(std::uint64_t shader) const {
++  const auto it = shaders_.find(shader);
++  if (it == shaders_.end()) return Assignment{};
++  return it->second.assignment;
++}
++
++MaterialAvailability MaterialCatalogue::availability() const {
++  MaterialAvailability available;  // Environment always
++  for (const auto& [hash, entry] : shaders_) {
++    (void)hash;
++    if (!entry.assignment.known()) continue;
++
++    // Seen at least once this session. An assignment for a shader that has
++    // never run is a table entry, not a capability - and claiming the class is
++    // available would let core/semantic.hpp plan a composite for pixels that
++    // will never be labelled.
++    if (entry.stats.frames == 0) continue;
++    available.prove(entry.assignment.material);
++  }
++  return available;
++}
++
++std::vector<MaterialCatalogue::Unassigned> MaterialCatalogue::needs_calibration(
++    std::size_t limit) const {
++  std::vector<Unassigned> out;
++  for (const auto& [hash, entry] : shaders_) {
++    if (entry.assignment.known()) continue;
++
++    const StructureVerdict verdict = ClassifyStructure(entry.stats, frames_observed_);
++
++    // Interface is handled by the overlay mask and the world is derived, so
++    // neither is worth a question. What is left is what a person could usefully
++    // answer: the subjects and the transparent surfaces.
++    if (verdict.structure != Structure::Subject &&
++        verdict.structure != Structure::Transparent) {
++      continue;
++    }
++
++    out.push_back(Unassigned{hash, verdict.structure, entry.stats.draws,
++                             entry.stats.presence(frames_observed_)});
++  }
++
++  // Most-drawn first: the question worth asking first is the one that covers
++  // the most of the screen, not the one that happens to hash lowest.
++  std::sort(out.begin(), out.end(), [](const Unassigned& a, const Unassigned& b) {
++    if (a.draws != b.draws) return a.draws > b.draws;
++    return a.shader < b.shader;
++  });
++  if (out.size() > limit) out.resize(limit);
++  return out;
++}
++
++const ShaderStats* MaterialCatalogue::stats(std::uint64_t shader) const {
++  const auto it = shaders_.find(shader);
++  return it == shaders_.end() ? nullptr : &it->second.stats;
++}
++
++}  // namespace emko::core::frame
+diff --git a/v3/src/core/frame/materials.hpp b/v3/src/core/frame/materials.hpp
+new file mode 100644
+index 0000000..14bbcc2
+--- /dev/null
++++ b/v3/src/core/frame/materials.hpp
+@@ -0,0 +1,219 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/frame/materials.hpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ *
++ * Knowing which pixels are a face.
++ *
++ * core/semantic.hpp can hold skin back from being sharpened into sandpaper. It
++ * has been able to since it was written, and it has never done it once, because
++ * nothing tells it where skin is. This file is that missing half.
++ *
++ * WHAT CAN AND CANNOT BE CONCLUDED FROM WATCHING
++ *
++ * Being honest about this is the whole design, so it is worth stating before
++ * any code.
++ *
++ * A draw call arrives as a shader identity and a handful of render states.
++ * Nothing in it says "skin". What *is* visible, over many frames, is how a
++ * shader behaves - and behaviour separates some things cleanly and others not
++ * at all:
++ *
++ *   Provable. The world. Its shaders run in essentially every frame, write
++ *   depth, and fill several render targets at once. Nothing else does all
++ *   three. A shader that does is the world, and a shader that does not, is not.
++ *
++ *   Provable as a group. Transparent surfaces - glass, foliage, particles.
++ *   Alpha-blended, depth-tested, drawn after the opaque pass. Clearly separable
++ *   from both the world and from subjects, but glass and foliage are not
++ *   separable from each other this way.
++ *
++ *   Not provable. Skin against hair against clothing. They are three shaders on
++ *   the same character, drawn in the same pass, with statistics that overlap.
++ *   Any rule that claims to tell them apart from draw counts and vertex counts
++ *   is a rule that was fitted to one scene.
++ *
++ * So this file does not pretend. The structural tier is derived; the semantic
++ * tier comes from a catalogue, and a catalogue entry is either shipped with the
++ * build it was made against or set by the player once. Until an entry exists,
++ * the class does not exist, and core/semantic.hpp already knows what to do with
++ * a class that does not exist: treat those pixels as world, exactly as today.
++ *
++ * WHY A CATALOGUE IS NOT A CLIMBDOWN
++ *
++ * Shader hashes are stable for a given game build. One person calibrating once
++ * produces a table that is correct for everyone on that build, and it ships. The
++ * alternative - a heuristic that is right most of the time - puts a seam through
++ * a face the rest of the time, and a seam through a face is not a smaller
++ * failure than an unconfigured feature. It is a much larger one.
++ *
++ * The catalogue is pinned to a build identity for the same reason the live
++ * control adapter is: a table gathered against one build and applied to another
++ * is a table applied to different shaders with the same names.
++ */
++
++#ifndef SECRETEMKO_CORE_FRAME_MATERIALS_HPP
++#define SECRETEMKO_CORE_FRAME_MATERIALS_HPP
++
++#include <cstdint>
++#include <string>
++#include <unordered_map>
++#include <vector>
++
++#include "core/semantic.hpp"
++
++namespace emko::core::frame {
++
++// What watching one shader over many frames adds up to. Accumulated on the
++// render thread, so every field is a counter or a running mean - nothing here
++// allocates or sorts.
++struct ShaderStats {
++  std::uint64_t draws = 0;
++  std::uint64_t frames = 0;             // frames in which it appeared at all
++  std::uint64_t frames_blended = 0;
++
++  // Testing depth and writing it are different claims and have to be counted
++  // separately. Transparent surfaces test without writing - they need to be
++  // occluded by the world but must not occlude each other - and a model that
++  // only counts writes cannot tell them from interface, which touches depth not
++  // at all.
++  std::uint64_t frames_depth_tested = 0;
++  std::uint64_t frames_depth_written = 0;
++  std::uint64_t frames_multi_target = 0;  // filled a G-buffer
++  double mean_vertices = 0.0;
++  std::uint64_t last_frame = 0;
++  std::uint64_t first_frame = 0;
++
