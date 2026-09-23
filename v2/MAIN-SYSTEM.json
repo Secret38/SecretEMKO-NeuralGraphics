@@ -120,7 +120,7 @@
         "HUD protection",
         "automatic pause"
       ],
-      "motion": "geometry-derived GTA motion is the production target; optical flow is not accepted for production FG",
+      "motion": "shader-injected GTA motion is the production target; optical flow is not accepted for production FG",
       "hud": "capture HUD-less scene color plus UI alpha/color separately, then recompose",
       "architecture_doc": "FRAMEGEN-NATIVE.md"
     }
