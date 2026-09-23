@@ -164,6 +164,12 @@ bool FileExists(const wchar_t* name) {
   return std::filesystem::exists(g_dir / name, ec);
 }
 
+// Runtime helpers below are intentionally placed before the component-status
+// helpers because AddonInit needs bootstrap/telemetry early. Declare the two
+// status queries they consume; their definitions remain in the component block.
+bool RenoDxLoaded();
+bool BridgeLoaded();
+
 bool PathExists(const std::filesystem::path& path) {
   std::error_code ec;
   return std::filesystem::exists(path, ec);
