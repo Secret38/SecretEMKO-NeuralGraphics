@@ -12,6 +12,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 
