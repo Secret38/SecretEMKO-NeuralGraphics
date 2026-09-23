@@ -98,12 +98,97 @@ jobs:
           }
           catch {
             $failed = $true
-            if ($_.Exception.Message -notmatch "built RC2 artifact") { throw }
+            if ($_.Exception.Message -notmatch "built RC3 artifact") { throw }
           }
 
           if (-not $failed) { throw "Source tree unexpectedly accepted Full Neural." }
           if (-not (Test-Path (Join-Path $plugins "sentinel.txt"))) { throw "Source preflight modified the existing plugins folder." }
           if (@(Get-ChildItem -LiteralPath $app -Directory -Filter "plugins.before-secret-emko.*").Count -ne 0) { throw "Source preflight isolated plugins before package validation." }
+
+      - name: Validate pinned RenoDX v4.70 live-control binary
+        shell: powershell
+        run: |
+          $url = "https://github.com/RankFTW/rhi-repo/releases/download/renodx-dlss5-4.70/renodx-dlss5_4.70.zip"
+          $zip = Join-Path $env:RUNNER_TEMP "renodx-dlss5_4.70.zip"
+          $dir = Join-Path $env:RUNNER_TEMP "renodx-dlss5_4.70"
+          Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $zip
+          $packageHash = (Get-FileHash $zip -Algorithm SHA256).Hash
+          if ($packageHash -ine "D6E356D01B429AF6288F488A4926C44F1D779A7D4586EE8C79D04D3A09A536E6") {
+            throw "Unexpected RenoDX v4.70 package hash: $packageHash"
+          }
+          Expand-Archive $zip $dir -Force
+          $consumer = Get-ChildItem $dir -Recurse -File -Filter "renodx-dlss5*.addon64" | Select-Object -First 1
+          if (-not $consumer) { throw "RenoDX DLSS5 consumer missing from pinned package" }
+          if ($consumer.Length -ne 1732608) { throw "Unexpected RenoDX consumer size: $($consumer.Length)" }
+          $hash = (Get-FileHash $consumer.FullName -Algorithm SHA256).Hash
+          if ($hash -ine "D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C8593952") {
+            throw "RenoDX live-control binary changed: $hash"
+          }
+
+          $bytes = [IO.File]::ReadAllBytes($consumer.FullName)
+
+          function Get-U16([int]$Offset) {
+            return [BitConverter]::ToUInt16($bytes, $Offset)
+          }
+          function Get-U32([int]$Offset) {
+            return [BitConverter]::ToUInt32($bytes, $Offset)
+          }
+          function Convert-RvaToRaw([uint32]$Rva) {
+            $pe = [int](Get-U32 0x3C)
+            if ([Text.Encoding]::ASCII.GetString($bytes, $pe, 4) -ne ("PE" + [char]0 + [char]0)) {
+              throw "Pinned RenoDX consumer is not a valid PE image"
+            }
+
+            $sectionCount = [int](Get-U16 ($pe + 6))
+            $optionalSize = [int](Get-U16 ($pe + 20))
+            $sectionTable = $pe + 24 + $optionalSize
+
+            for ($s = 0; $s -lt $sectionCount; $s++) {
+              $entry = $sectionTable + ($s * 40)
+              $virtualSize = [uint32](Get-U32 ($entry + 8))
+              $virtualAddress = [uint32](Get-U32 ($entry + 12))
+              $rawSize = [uint32](Get-U32 ($entry + 16))
+              $rawPointer = [uint32](Get-U32 ($entry + 20))
+              $span = [Math]::Max([uint64]$virtualSize, [uint64]$rawSize)
+              if ([uint64]$Rva -ge [uint64]$virtualAddress -and
+                  [uint64]$Rva -lt ([uint64]$virtualAddress + $span)) {
+                return [int]([uint64]$rawPointer + ([uint64]$Rva - [uint64]$virtualAddress))
+              }
+            }
+            throw ("RVA 0x{0:X} is not backed by a PE section" -f $Rva)
+          }
+
+          function Assert-RvaBytes([uint32]$Rva, [byte[]]$Expected, [string]$Name) {
+            $raw = Convert-RvaToRaw $Rva
+            for ($i = 0; $i -lt $Expected.Length; $i++) {
+              if ($bytes[$raw + $i] -ne $Expected[$i]) {
+                throw ("$Name fingerprint mismatch at RVA 0x{0:X}" -f ($Rva + $i))
+              }
+            }
+          }
+
+          Assert-RvaBytes 0x23ff8 ([byte[]](0xB9,0x32,0x4B,0x00,0x00,0xFF,0xD0,0x48,0x89,0x05,0x9A,0x2C,0x17,0x00)) "RenoDX init"
+          Assert-RvaBytes 0x2607c ([byte[]](0x48,0x8D,0x15,0x7D,0x45,0x00,0x00,0xFF,0xD0)) "RenoDX settings callback"
+
+          $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+          foreach ($requiredString in @(
+            "RenoDX-DLSSNR",
+            "Enable DLSS Neural Rendering",
+            "Overall Intensity",
+            "Global Tone Intensity",
+            "Local Tone Intensity",
+            "Structure Intensity",
+            "Character/Skin Structure",
+            "Automatic / Character Mask",
+            "NR UI Correction",
+            "NR Preset",
+            "NR Style",
+            "Depth Convention"
+          )) {
+            if (-not $ascii.Contains($requiredString)) {
+              throw "Pinned RenoDX binary is missing live-control contract string: $requiredString"
+            }
+          }
 
       - name: Build RenoDX-native addon and package
         shell: powershell
@@ -113,7 +198,7 @@ jobs:
       - name: Verify release files
         shell: powershell
         run: |
-          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc2"
+          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3"
           $required = @(
             "SecretEMKO.addon64",
             "dlss5-bridge.addon64",
@@ -129,7 +214,8 @@ jobs:
             "MAIN-SYSTEM.json",
             "COMPATIBILITY.md",
             "README.md",
-            "VERSIONS.json"
+            "VERSIONS.json",
+            "licenses\DLSS5-Swapper-LICENSE.txt"
           )
           foreach ($f in $required) {
             $p = Join-Path $stage $f
@@ -138,10 +224,63 @@ jobs:
           Get-FileHash "$stage\SecretEMKO.addon64" -Algorithm SHA256
           Get-FileHash "$stage\dlss5-bridge.addon64" -Algorithm SHA256
 
+      - name: End-to-end Full Neural state persistence test
+        shell: powershell
+        run: |
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3").Path
+          $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Full Neural Persistence Test"
+          $app = Join-Path $fake "FiveM.app"
+          New-Item -ItemType Directory -Path $app -Force | Out-Null
+          Set-Content -LiteralPath (Join-Path $app "CitizenFX.ini") -Value "[Game]"
+
+          & (Join-Path $stage "tools\Install-SecretEMKO.ps1") -FiveMPath $fake -Mode FullNeural -ForceNeuralStack -SkipStreamline -NonInteractive
+
+          $plugins = Join-Path $app "plugins"
+          $ini = Join-Path $plugins "ReShade.ini"
+          $bridge = Join-Path $plugins "dlss5-bridge.cfg"
+          foreach ($name in @("SecretEMKO.addon64","renodx-dlss5.addon64","dlss5-bridge.addon64","nvngx_dlssnr.dll","nvngx_dlss.dll")) {
+            if (-not (Test-Path (Join-Path $plugins $name))) { throw "Missing Full Neural backend: $name" }
+          }
+
+          $consumerHash = (Get-FileHash (Join-Path $plugins "renodx-dlss5.addon64") -Algorithm SHA256).Hash
+          if ($consumerHash -ine "D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C8593952") {
+            throw "Installed RenoDX backend is not the live-adapter-compatible v4.70 binary"
+          }
+
+          $iniText = Get-Content -LiteralPath $ini -Raw
+          $iniText = [regex]::Replace($iniText, '(?m)^NRIntensity=.*$', 'NRIntensity=1.470000')
+          $iniText = [regex]::Replace($iniText, '(?m)^NeuralUplift=.*$', 'NeuralUplift=0')
+          $iniText = [regex]::Replace($iniText, '(?m)^BackendsNextStart=.*$', 'BackendsNextStart=0')
+          $iniText = [regex]::Replace(
+            $iniText,
+            '(?m)^DisabledAddons=.*$',
+            'DisabledAddons=SECRET EMKO RenoDX backend@renodx-dlss5.addon64,SECRET EMKO DLSS5 bridge@dlss5-bridge.addon64'
+          )
+          Set-Content -LiteralPath $ini -Value $iniText -Encoding UTF8
+
+          $bridgeText = Get-Content -LiteralPath $bridge -Raw
+          $bridgeText = [regex]::Replace($bridgeText, '(?m)^ofa_grid=.*$', 'ofa_grid=1')
+          Set-Content -LiteralPath $bridge -Value $bridgeText -Encoding UTF8
+
+          & (Join-Path $stage "tools\Install-SecretEMKO.ps1") -FiveMPath $fake -Mode FullNeural -ForceNeuralStack -SkipStreamline -NonInteractive
+
+          $after = Get-Content -LiteralPath $ini -Raw
+          if ($after -notmatch '(?m)^NRIntensity=1\.470000\r?$') { throw "Installer reset NRIntensity" }
+          if ($after -notmatch '(?m)^NeuralUplift=0\r?$') { throw "Installer re-enabled Neural Rendering" }
+          if ($after -notmatch '(?m)^BackendsNextStart=0\r?$') { throw "Installer reset backend load policy" }
+          if ($after -notmatch 'renodx-dlss5\.addon64' -or $after -notmatch 'dlss5-bridge\.addon64') {
+            throw "Installer lost DisabledAddons backend policy"
+          }
+          if ((Get-Content -LiteralPath $bridge -Raw) -notmatch '(?m)^ofa_grid=1\r?$') {
+            throw "Installer reset bridge quality state"
+          }
+
+          & (Join-Path $stage "tools\Uninstall-SecretEMKO.ps1") -FiveMPath $fake -NonInteractive
+
       - name: End-to-end RP Visual isolation and restore test
         shell: powershell
         run: |
-          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc2").Path
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3").Path
           $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO FiveM Legacy Test"
           $app = Join-Path $fake "FiveM.app"
           $oldPlugins = Join-Path $app "plugins"
@@ -185,7 +324,7 @@ jobs:
       - name: End-to-end missing plugins creation test
         shell: powershell
         run: |
-          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc2").Path
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3").Path
           $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Missing Plugins Test"
           $app = Join-Path $fake "FiveM.app"
           New-Item -ItemType Directory -Path $app -Force | Out-Null
@@ -207,7 +346,7 @@ jobs:
       - name: Reject unsupported Full Neural hardware before modification
         shell: powershell
         run: |
-          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc2").Path
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3").Path
           $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Unsupported Neural Test"
           $app = Join-Path $fake "FiveM.app"
           $plugins = Join-Path $app "plugins"
@@ -229,8 +368,8 @@ jobs:
       - name: Upload v2 package
         uses: actions/upload-artifact@v4
         with:
-          name: SecretEMKO-NeuralGraphics-v2.0.0-rc2
+          name: SecretEMKO-NeuralGraphics-v2.0.0-rc3
           path: |
-            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc2/**
-            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc2.zip
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc3/**
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc3.zip
           if-no-files-found: error

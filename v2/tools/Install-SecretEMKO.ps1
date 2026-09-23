@@ -19,7 +19,7 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ((Split-Path -Leaf $Root) -ieq "tools") { $Root = Split-Path -Parent $Root }
 
 $Product = "SECRET EMKO Neural Graphics"
-$Version = "2.0.0-rc2"
+$Version = "2.0.0-rc3"
 $Cache = Join-Path $env:LOCALAPPDATA "SecretEMKO\cache"
 $GlobalStateRoot = Join-Path $env:LOCALAPPDATA "SecretEMKO\state"
 $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -37,11 +37,12 @@ $Hashes = @{
     Streamline = "92C4D954631A1710DA86CA3FA8D5034F2B9503838C95FC4AE977AE149319781B"
 }
 $Rtx50NrDllHash = "E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E"
+$RenoDXAddonHash = "D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C8593952"
 
 function Banner {
     Write-Host ""
     Write-Host "================================================================" -ForegroundColor DarkGray
-    Write-Host " SECRET EMKO  //  NEURAL GRAPHICS v2 RC2" -ForegroundColor Cyan
+    Write-Host " SECRET EMKO  //  NEURAL GRAPHICS v2 RC3" -ForegroundColor Cyan
     Write-Host " Universal FiveM Legacy installer  |  isolated + reversible" -ForegroundColor Gray
     Write-Host "================================================================" -ForegroundColor DarkGray
     Write-Host ""
@@ -195,7 +196,7 @@ function Resolve-FiveMAppPath {
 
     $enhancedConfig = Join-Path $env:APPDATA "FiveM for GTAV Enhanced\config.toml"
     if (Test-Path -LiteralPath $enhancedConfig) {
-        throw "Only FiveM for GTAV Enhanced was detected. SECRET EMKO v2 RC2 currently targets FiveM GTA V Legacy and will not install into Enhanced."
+        throw "Only FiveM for GTAV Enhanced was detected. SECRET EMKO v2 RC3 currently targets FiveM GTA V Legacy and will not install into Enhanced."
     }
 
     throw "FiveM Legacy was not found. Start FiveM Legacy once, or run the installer with -FiveMPath <path-to-FiveM.exe>."
@@ -380,6 +381,94 @@ function Set-IniValue([string]$Path,[string]$Section,[string]$Key,[string]$Value
     Set-Content -LiteralPath $Path -Value $lines -Encoding UTF8
 }
 
+function Get-IniValue([string]$Path,[string]$Section,[string]$Key) {
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
+    $inside = $false
+    foreach ($line in Get-Content -LiteralPath $Path) {
+        $trim = $line.Trim()
+        if ($trim -match '^\[(.+)\]$') {
+            $inside = $Matches[1] -ieq $Section
+            continue
+        }
+        if ($inside -and $line -match ("^\s*" + [regex]::Escape($Key) + "\s*=(.*)$")) {
+            return $Matches[1].Trim()
+        }
+    }
+    return $null
+}
+
+function Ensure-IniValue([string]$Path,[string]$Section,[string]$Key,[string]$DefaultValue) {
+    if ($null -eq (Get-IniValue $Path $Section $Key)) {
+        Set-IniValue $Path $Section $Key $DefaultValue
+    }
+}
+
+function Get-SecretEmkoPersistentIniState([string]$Path) {
+    $state = [ordered]@{}
+    if (-not (Test-Path -LiteralPath $Path)) { return $state }
+
+    $keys = [ordered]@{
+        "ADDON" = @("DisabledAddons")
+        "SecretEMKO" = @(
+            "Profile","FrameGenerationPolicy","InstallMode","BackendsNextStart",
+            "BridgeSynth","BridgeSource","BridgeOfaGrid","BridgeOfaPerf","BridgeStage",
+            "BridgeMode","BridgeSkipGame","BridgeDred","BridgeSkipExe","BridgeUnwrap","BridgeHashOut"
+        )
+        "RenoDX.DLSS5" = @(
+            "EnableHooks","NeuralUplift","NREnableUpscaling","NRPreset","NRStyle",
+            "NRIntensity","NRGlobalTone","NRLocalTone","NRLocalStructure","NRSkinStructure",
+            "NRAutoMask","NRUICorrection","NRDiffuseWhiteNits","NRPaperWhiteScale",
+            "NRTransferStrength","NRColorStrength","NRDepthMode","NRMVecScaleX","NRMVecScaleY",
+            "NRToggleKey","NRScreenshotKey"
+        )
+    }
+
+    foreach ($section in $keys.Keys) {
+        foreach ($key in $keys[$section]) {
+            $value = Get-IniValue $Path $section $key
+            if ($null -ne $value) {
+                $state[("{0}::{1}" -f $section, $key)] = [string]$value
+            }
+        }
+    }
+    return $state
+}
+
+function Restore-SecretEmkoPersistentIniState([string]$Path, [object]$State) {
+    if ($null -eq $State) { return }
+    foreach ($entry in $State.GetEnumerator()) {
+        $parts = [string]$entry.Key -split "::", 2
+        if ($parts.Count -ne 2) { continue }
+        Set-IniValue $Path $parts[0] $parts[1] ([string]$entry.Value)
+    }
+}
+
+function Restore-SecretEmkoPersistentIniStateFromFile([string]$SourcePath, [string]$TargetPath) {
+    if (-not (Test-Path -LiteralPath $SourcePath)) { return }
+    $state = Get-SecretEmkoPersistentIniState $SourcePath
+    Restore-SecretEmkoPersistentIniState $TargetPath $state
+}
+
+function Set-BackendDisabledPolicy([string]$Path,[bool]$LoadBackends) {
+    $current = Get-IniValue $Path "ADDON" "DisabledAddons"
+    $entries = New-Object System.Collections.Generic.List[string]
+    if ($current) {
+        foreach ($raw in ($current -split ",")) {
+            $entry = $raw.Trim()
+            if (-not $entry) { continue }
+            $at = $entry.LastIndexOf("@")
+            $file = if ($at -ge 0) { $entry.Substring($at + 1).Trim() } else { "" }
+            if ($file -ieq "renodx-dlss5.addon64" -or $file -ieq "dlss5-bridge.addon64") { continue }
+            [void]$entries.Add($entry)
+        }
+    }
+    if (-not $LoadBackends) {
+        [void]$entries.Add("SECRET EMKO RenoDX backend@renodx-dlss5.addon64")
+        [void]$entries.Add("SECRET EMKO DLSS5 bridge@dlss5-bridge.addon64")
+    }
+    Set-IniValue $Path "ADDON" "DisabledAddons" ($entries -join ",")
+}
+
 function Copy-OptionalStreamlineFile([string]$Extracted, [string]$Name, [string]$Target, [string]$BackupRoot) {
     $candidates = @(Get-ChildItem -LiteralPath $Extracted -Recurse -File -Filter $Name -ErrorAction SilentlyContinue |
         Where-Object { $_.FullName -match '[\\/]bin[\\/]x64[\\/]' -and $_.FullName -notmatch '[\\/]development[\\/]' })
@@ -557,16 +646,16 @@ if ($neuralMode) {
     if ($missingPackageFiles.Count -gt 0) {
         Write-Host ""
         Write-Host "FULL NEURAL PACKAGE PRECHECK FAILED" -ForegroundColor Red
-        Write-Host "This folder is a source checkout/source ZIP, not the built SECRET EMKO RC2 package." -ForegroundColor Yellow
+        Write-Host "This folder is a source checkout/source ZIP, not the built SECRET EMKO RC3 package." -ForegroundColor Yellow
         Write-Host "Do not use GitHub 'Code -> Download ZIP' for Full Neural." -ForegroundColor Yellow
         Write-Host "Download the successful GitHub Actions artifact named:" -ForegroundColor Yellow
-        Write-Host "  SecretEMKO-NeuralGraphics-v2.0.0-rc2" -ForegroundColor Cyan
+        Write-Host "  SecretEMKO-NeuralGraphics-v2.0.0-rc3" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "Missing packaged files:" -ForegroundColor Gray
         foreach ($missingFile in $missingPackageFiles) {
             Write-Host ("  - " + (Split-Path -Leaf $missingFile)) -ForegroundColor Gray
         }
-        throw "Full Neural requires the built RC2 artifact. No FiveM plugins have been modified by this precheck."
+        throw "Full Neural requires the built RC3 artifact. No FiveM plugins have been modified by this precheck."
     }
 }
 
@@ -654,7 +743,14 @@ try {
     Ok "Update backup root: $Backup"
 
     Step "Checking/installing ReShade"
+    # ReShade setup/update may rewrite ReShade.ini. Preserve the user-owned
+    # SECRET EMKO/RenoDX/backend-policy keys, then merge them back afterward.
+    $persistentIniState = [ordered]@{}
+    if ($managedExisting -and $priorState.install_mode -eq $installMode) {
+        $persistentIniState = Get-SecretEmkoPersistentIniState $reshadeIni
+    }
     Install-ReShadeHeadless $PluginsPath $neuralMode
+    Restore-SecretEmkoPersistentIniState $reshadeIni $persistentIniState
 
     if (-not $neuralMode) {
         Step "Removing Full Neural-only runtime files from active RP Visual environment"
@@ -706,7 +802,7 @@ try {
         Download-Verified $Urls.RenoDX $renodxZip $Hashes.RenoDX
         $renodxExtract = Join-Path $Cache "renodx-dlss5_4.70"
         Expand-Fresh $renodxZip $renodxExtract
-        $consumer = Find-RequiredFile $renodxExtract "renodx-dlss5*.addon64"
+        $consumer = Find-RequiredFile $renodxExtract "renodx-dlss5*.addon64" $RenoDXAddonHash
         Copy-Managed $consumer "renodx-dlss5.addon64" $PluginsPath $Backup
         [void]$managed.Add("renodx-dlss5.addon64")
 
@@ -759,36 +855,48 @@ try {
             }
         }
 
-        Step "Writing FiveM / RenoDX quality defaults"
+        Step "Writing/preserving FiveM / RenoDX quality state"
         Set-IniValue $reshadeIni "ADDON" "AddonPath" "."
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "EnableHooks" "2"
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NeuralUplift" "1"
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NREnableUpscaling" "0"
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRPreset" "0"
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRStyle" "1"
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRIntensity" "1.20"
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRGlobalTone" "1.05"
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRLocalTone" "1.05"
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRLocalStructure" "1.35"
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRSkinStructure" "1.00"
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRAutoMask" "1"
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRUICorrection" "1"
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRDiffuseWhiteNits" "203"
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRPaperWhiteScale" "1.0"
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRTransferStrength" "1.0"
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRColorStrength" "0.95"
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRDepthMode" "0"
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRMVecScaleX" "1.0"
-        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRMVecScaleY" "1.0"
+        Ensure-IniValue $reshadeIni "RenoDX.DLSS5" "EnableHooks" "2"
+        Ensure-IniValue $reshadeIni "RenoDX.DLSS5" "NeuralUplift" "1"
+        Ensure-IniValue $reshadeIni "RenoDX.DLSS5" "NREnableUpscaling" "0"
+        Ensure-IniValue $reshadeIni "RenoDX.DLSS5" "NRPreset" "0"
+        Ensure-IniValue $reshadeIni "RenoDX.DLSS5" "NRStyle" "1"
+        Ensure-IniValue $reshadeIni "RenoDX.DLSS5" "NRIntensity" "1.20"
+        Ensure-IniValue $reshadeIni "RenoDX.DLSS5" "NRGlobalTone" "1.05"
+        Ensure-IniValue $reshadeIni "RenoDX.DLSS5" "NRLocalTone" "1.05"
+        Ensure-IniValue $reshadeIni "RenoDX.DLSS5" "NRLocalStructure" "1.35"
+        Ensure-IniValue $reshadeIni "RenoDX.DLSS5" "NRSkinStructure" "1.00"
+        Ensure-IniValue $reshadeIni "RenoDX.DLSS5" "NRAutoMask" "1"
+        Ensure-IniValue $reshadeIni "RenoDX.DLSS5" "NRUICorrection" "1"
+        Ensure-IniValue $reshadeIni "RenoDX.DLSS5" "NRDiffuseWhiteNits" "203"
+        Ensure-IniValue $reshadeIni "RenoDX.DLSS5" "NRPaperWhiteScale" "1.0"
+        Ensure-IniValue $reshadeIni "RenoDX.DLSS5" "NRTransferStrength" "1.0"
+        Ensure-IniValue $reshadeIni "RenoDX.DLSS5" "NRColorStrength" "0.95"
+        Ensure-IniValue $reshadeIni "RenoDX.DLSS5" "NRDepthMode" "0"
+        Ensure-IniValue $reshadeIni "RenoDX.DLSS5" "NRMVecScaleX" "1.0"
+        Ensure-IniValue $reshadeIni "RenoDX.DLSS5" "NRMVecScaleY" "1.0"
+
+        # SECRET EMKO owns runtime input. RenoDX global hotkeys stay unbound so
+        # a gameplay key cannot silently diverge from the SECRET EMKO UI state.
         Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRToggleKey" "0"
         Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRScreenshotKey" "0"
-        Set-IniValue $reshadeIni "SecretEMKO" "Profile" "3"
-        Set-IniValue $reshadeIni "SecretEMKO" "FrameGenerationPolicy" "0"
+
+        Ensure-IniValue $reshadeIni "SecretEMKO" "Profile" "3"
+        Ensure-IniValue $reshadeIni "SecretEMKO" "FrameGenerationPolicy" "0"
         Set-IniValue $reshadeIni "SecretEMKO" "InstallMode" "full-neural"
 
-        Copy-Item -LiteralPath (Join-Path $Root "config\dlss5-bridge.cfg") -Destination $bridgeCfg -Force
+        $neuralEnabled = Get-IniValue $reshadeIni "RenoDX.DLSS5" "NeuralUplift"
+        $defaultBackendState = if ($neuralEnabled -eq "0") { "0" } else { "1" }
+        Ensure-IniValue $reshadeIni "SecretEMKO" "BackendsNextStart" $defaultBackendState
+        $backendState = Get-IniValue $reshadeIni "SecretEMKO" "BackendsNextStart"
+        Set-BackendDisabledPolicy $reshadeIni ($backendState -ne "0")
+
+        if (-not (Test-Path -LiteralPath $bridgeCfg)) {
+            Copy-Item -LiteralPath (Join-Path $Root "config\dlss5-bridge.cfg") -Destination $bridgeCfg -Force
+        }
         [void]$managed.Add("dlss5-bridge.cfg")
-        Ok "Enhanced profile + synthetic D3D11 bridge configured"
+        Ok "Persisted Neural/Bridge state preserved; missing keys received RC3 defaults"
     }
     else {
         Step "Configuring RP Visual mode"
@@ -809,6 +917,30 @@ try {
         & $reshadeContentTool -TargetDirectory $PluginsPath -Architecture 64 -SkipAddon -SkipCoreCheck
     }
     Ok "ReShade Main/Stream content updated"
+
+    # Final persistence barrier: later content/update stages must never reset
+    # the user's Neural tuning or next-start backend policy on an in-place
+    # update of the same mode. Prefer the physical pre-update ReShade.ini backup
+    # as the authoritative source; it survives all intermediate setup tools.
+    $savedReShadeIni = Join-Path $Backup "ReShade.ini"
+    if ($managedExisting -and $priorState.install_mode -eq $installMode -and (Test-Path -LiteralPath $savedReShadeIni)) {
+        Restore-SecretEmkoPersistentIniStateFromFile $savedReShadeIni $reshadeIni
+    } else {
+        Restore-SecretEmkoPersistentIniState $reshadeIni $persistentIniState
+    }
+    if ($neuralMode) {
+        Set-IniValue $reshadeIni "SecretEMKO" "InstallMode" "full-neural"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRToggleKey" "0"
+        Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRScreenshotKey" "0"
+        $backendState = Get-IniValue $reshadeIni "SecretEMKO" "BackendsNextStart"
+        if ($null -eq $backendState) {
+            $backendState = if ((Get-IniValue $reshadeIni "RenoDX.DLSS5" "NeuralUplift") -eq "0") { "0" } else { "1" }
+            Set-IniValue $reshadeIni "SecretEMKO" "BackendsNextStart" $backendState
+        }
+        Set-BackendDisabledPolicy $reshadeIni ($backendState -ne "0")
+    } else {
+        Set-IniValue $reshadeIni "SecretEMKO" "InstallMode" "rp-visual"
+    }
 
     foreach ($name in @("Secret_Emko_Main.ini","Secret_Emko_Stream.ini")) {
         if (-not $managed.Contains($name)) { [void]$managed.Add($name) }

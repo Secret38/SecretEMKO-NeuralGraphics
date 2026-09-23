@@ -1,6 +1,6 @@
 {
   "product": "SECRET EMKO Neural Graphics",
-  "version": "2.0.0-rc2",
+  "version": "2.0.0-rc3",
   "role": "main-system",
   "installer": {
     "target": "FiveM GTA V Legacy x64",
@@ -65,5 +65,28 @@
   "runtimeCritical": {
     "policy": "pinned and SHA-256 verified until separately validated",
     "reason": "DLSS/NR/Bridge binary compatibility is more important than blindly following newest assets"
+  },
+  "runtimeOrchestration": {
+    "control_surface": "SECRET EMKO Neural Graphics is the sole intended settings UI",
+    "renodx_visibility": "verified v4.70 RenoDX settings overlay is unregistered while SECRET EMKO is active; backend remains registered/loaded",
+    "bridge_visibility": "DLSS 5 Bridge has no separate ImGui settings page and remains backend-only",
+    "live_apply": {
+      "bridge": "dlss5-bridge.cfg live reload (upstream approximately once per second)",
+      "renodx": "hash/fingerprint-pinned adapter invokes RenoDX v4.70 own settings callback and confirms supported values by readback",
+      "unsupported_provider_values": "persisted but explicitly require restart/provider recreation; never falsely reported as live"
+    },
+    "persistence": [
+      "ReShade.ini",
+      "dlss5-bridge.cfg",
+      "[SecretEMKO] BackendsNextStart",
+      "[ADDON] DisabledAddons"
+    ],
+    "lifecycle": {
+      "neural_off_now": "soft-disable RenoDX through verified live control when available; write bridge source=off/synth=0",
+      "neural_off_next_start": "ReShade DisabledAddons prevents renodx-dlss5.addon64 and dlss5-bridge.addon64 from being loaded",
+      "neural_on_when_loaded": "apply live immediately",
+      "neural_on_when_not_loaded": "remove DisabledAddons entries and require one restart so ReShade can load the backends",
+      "runtime_unload": "never FreeLibrary third-party ReShade add-ons mid-session"
+    }
   }
 }

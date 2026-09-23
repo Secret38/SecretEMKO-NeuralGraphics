@@ -34,6 +34,7 @@ finally { Pop-Location }
 $addonDir = Join-Path $src "src\addons\secretemko"
 New-Item -ItemType Directory -Path $addonDir -Force | Out-Null
 Copy-Item (Join-Path $RepoRoot "src\addon.cpp") (Join-Path $addonDir "addon.cpp") -Force
+Copy-Item (Join-Path $RepoRoot "src\renodx_live_adapter.hpp") (Join-Path $addonDir "renodx_live_adapter.hpp") -Force
 Copy-Item (Join-Path $RepoRoot "src\metadata.json") (Join-Path $addonDir "metadata.json") -Force
 
 Write-Host "Preparing RenoDX shader toolchain..."
@@ -55,7 +56,7 @@ $built = Get-ChildItem -LiteralPath $buildDir -Recurse -File -Filter "renodx-sec
 if (-not $built) { throw "renodx-secretemko.addon64 not found after build" }
 
 $distRoot = Join-Path $RepoRoot "dist"
-$stage = Join-Path $distRoot "SecretEMKO-NeuralGraphics-v2.0.0-rc2"
+$stage = Join-Path $distRoot "SecretEMKO-NeuralGraphics-v2.0.0-rc3"
 $zip = "$stage.zip"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 if (Test-Path $zip) { Remove-Item $zip -Force }
@@ -66,6 +67,19 @@ New-Item -ItemType Directory -Path (Join-Path $stage "licenses") -Force | Out-Nu
 New-Item -ItemType Directory -Path (Join-Path $stage "presets") -Force | Out-Null
 
 Copy-Item $built.FullName (Join-Path $stage "SecretEMKO.addon64") -Force
+
+# Verify the ReShade AddonInit/AddOnUninit lifecycle markers are present in the
+# compiled PE before packaging. __declspec(dllexport) causes these names to be
+# emitted into the export directory; this catches accidental regression back to
+# DllMain-only initialization without depending on Visual Studio PATH state.
+$addonPath = Join-Path $stage "SecretEMKO.addon64"
+$addonAscii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($addonPath))
+foreach ($symbol in @("AddonInit","AddonUninit","NAME","DESCRIPTION")) {
+    if (-not $addonAscii.Contains($symbol)) {
+        throw "Compiled SECRET EMKO add-on is missing lifecycle/export marker: $symbol"
+    }
+}
+Write-Host "SECRET EMKO AddonInit lifecycle markers verified"
 
 $bridge = Join-Path $WorkDir "dlss5-bridge.addon64"
 Invoke-WebRequest -UseBasicParsing -Uri $BridgeUrl -OutFile $bridge
@@ -102,13 +116,19 @@ $reshadeLicense = Join-Path $WorkDir "ReShade-LICENSE.md"
 Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/crosire/reshade/3645e3025d1d98a90e318278858931f034d5d1f6/LICENSE.md" -OutFile $reshadeLicense
 Copy-Item $reshadeLicense (Join-Path $stage "licenses\ReShade-LICENSE.md") -Force
 
+$swapperLicense = Join-Path $WorkDir "DLSS5-Swapper-LICENSE.txt"
+Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/rakanki911/DLSS5-Swapper/24bd2aca7a7451ce94e564366381e33cac9dcdba/LICENSE" -OutFile $swapperLicense
+Copy-Item $swapperLicense (Join-Path $stage "licenses\DLSS5-Swapper-LICENSE.txt") -Force
+
 $manifest = [ordered]@{
     product = "SECRET EMKO Neural Graphics"
-    version = "2.0.0-rc2"
+    version = "2.0.0-rc3"
     built = (Get-Date).ToUniversalTime().ToString("o")
     renodx_commit = $Commit
     bridge_version = "1.4.12"
     bridge_sha256 = $BridgeHash
+    renodx_dlss5_live_compatible_sha256 = "D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C8593952"
+    live_adapter_provenance = "Derived from MIT DLSS5-Swapper v4.7 UI bridge, commit 24bd2aca7a7451ce94e564366381e33cac9dcdba"
     addon_sha256 = (Get-FileHash -LiteralPath (Join-Path $stage "SecretEMKO.addon64") -Algorithm SHA256).Hash
 }
 $manifest | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $stage "BUILD-MANIFEST.json") -Encoding UTF8

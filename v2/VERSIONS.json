@@ -1,16 +1,16 @@
 {
   "product": "SECRET EMKO Neural Graphics",
-  "version": "2.0.0-rc2",
+  "version": "2.0.0-rc3",
   "verified_on": "2026-09-23",
   "support": {
     "platform": "Windows x64",
     "game": "FiveM GTA V Legacy",
     "fivem_installation": "standard and custom paths; automatic discovery with interactive fallback",
     "existing_plugins": "isolated by default and restored transactionally",
-    "enhanced": "not supported by v2 RC2; installer fails closed",
+    "enhanced": "not supported by v2 RC3; installer fails closed",
     "modes": {
       "rp_visual": "default launcher; standard signed ReShade + Main/Stream presets; no external ReShade add-ons",
-      "full_neural": "explicit launcher/Mode FullNeural; RTX 50-series + ReShade Full Add-on + SECRET EMKO/RenoDX/DLSS stack"
+      "full_neural": "explicit launcher/Mode FullNeural; RTX 50-series + ReShade Full Add-on + SECRET EMKO-managed RenoDX/DLSS backends"
     },
     "multiplayer": "server plugin policy applies; no Pure Mode, anti-cheat, server restriction or ReShade restriction bypass"
   },
@@ -48,12 +48,16 @@
       "asset": "dlss5-bridge.addon64",
       "sha256": "4F2ACECC1026AE89AC0B92767BE66CEEA2662AD0EF88710B89C7DA7840D548D4",
       "mode": "full_neural_only",
-      "license": "MIT"
+      "license": "MIT",
+      "lifecycle": "backend-only; no own settings overlay; cfg is live-reloaded upstream, and SECRET EMKO schedules it not to load next start when Neural Rendering is off"
     },
     "renodx_dlss5_consumer": {
       "version": "4.70",
       "package_sha256": "D6E356D01B429AF6288F488A4926C44F1D779A7D4586EE8C79D04D3A09A536E6",
-      "mode": "full_neural_only"
+      "mode": "full_neural_only",
+      "binary_sha256": "D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C8593952",
+      "binary_size": 1732608,
+      "lifecycle": "file remains installed; SECRET EMKO soft-disables it at runtime and uses ReShade DisabledAddons so it is skipped on the next start when Neural Rendering is off"
     },
     "nvidia_dlss_sr": {
       "version": "310.9.1",
@@ -70,6 +74,14 @@
       "version": "2.14.1",
       "official_package_sha256": "92C4D954631A1710DA86CA3FA8D5034F2B9503838C95FC4AE977AE149319781B",
       "mode": "full_neural_only"
+    },
+    "secretemko_live_control": {
+      "version": "rc3",
+      "provider": "renodx-dlss5 v4.70 only",
+      "provider_sha256": "D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C8593952",
+      "safety": "exact size + SHA-256 + code fingerprints + ImGui dispatch identity; refuses unknown builds",
+      "behavior": "SECRET EMKO unregisters the verified RenoDX settings page, applies supported values through RenoDX's own callback, and requests immediate callback readback confirmation",
+      "provenance": "MIT adapter derived from rakanki911/DLSS5-Swapper commit 24bd2aca7a7451ce94e564366381e33cac9dcdba"
     }
   }
 }
