@@ -98,7 +98,7 @@ jobs:
           }
           catch {
             $failed = $true
-            if ($_.Exception.Message -notmatch "built RC4 artifact") { throw }
+            if ($_.Exception.Message -notmatch "built RC5 artifact") { throw }
           }
 
           if (-not $failed) { throw "Source tree unexpectedly accepted Full Neural." }
@@ -198,9 +198,10 @@ jobs:
       - name: Verify release files
         shell: powershell
         run: |
-          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc4"
+          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc5"
           $required = @(
             "SecretEMKO.addon64",
+            "SecretEMKO-FG.addon64",
             "dlss5-bridge.addon64",
             "INSTALL_SECRET_EMKO.bat",
             "INSTALL_SECRET_EMKO_FULL_NEURAL.bat",
@@ -213,6 +214,7 @@ jobs:
             "presets\Secret_Emko_Stream.ini",
             "MAIN-SYSTEM.json",
             "COMPATIBILITY.md",
+            "FRAMEGEN-NATIVE.md",
             "README.md",
             "VERSIONS.json",
             "licenses\DLSS5-Swapper-LICENSE.txt"
@@ -222,10 +224,11 @@ jobs:
             if (-not (Test-Path $p)) { throw "Missing release file: $f" }
           }
           Get-FileHash "$stage\SecretEMKO.addon64" -Algorithm SHA256
+          Get-FileHash "$stage\SecretEMKO-FG.addon64" -Algorithm SHA256
           Get-FileHash "$stage\dlss5-bridge.addon64" -Algorithm SHA256
 
           $versions = Get-Content ".\v2\VERSIONS.json" -Raw | ConvertFrom-Json
-          if ($versions.version -ne "2.0.0-rc4") { throw "VERSIONS.json is not RC4" }
+          if ($versions.version -ne "2.0.0-rc5") { throw "VERSIONS.json is not RC5" }
           if ($versions.components.dlss5_bridge.version -ne "1.4.13-pre8") { throw "Wrong bridge version" }
           $expectedBridge = "C4C8B5BC4B26B2B3F3BF2767CDB708546D62F7D0BBB63D24E940C736DA9EFE26"
           $actualBridge = (Get-FileHash "$stage\dlss5-bridge.addon64" -Algorithm SHA256).Hash
@@ -237,15 +240,35 @@ jobs:
             "LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR",
             "CreateHardLinkW",
             "RefreshBridgeRuntimeSnapshot",
-            "Core stack %.0f%% installed"
+            "ApplyGamingStyle",
+            "FrameGenProviderInstalled",
+            "QueryFrameGenProvider",
+            "ApplyCompatibilityMotionPath",
+            "ApplyNativeFrameGenPath",
+            "EnsureTemporalPolicy",
+            "FrameGenerationAutoBaseFPS",
+            "HUD PROTECTION"
           )) {
-            if (-not $addonSource.Contains($requiredMarker)) { throw "RC4 runtime marker missing: $requiredMarker" }
+            if (-not $addonSource.Contains($requiredMarker)) { throw "RC5 runtime marker missing: $requiredMarker" }
+          }
+
+          $fgSource = Get-Content ".\v2\src\fg_provider.cpp" -Raw
+          foreach ($requiredMarker in @(
+            "SecretEMKO_FG_GetStatus",
+            "SECRET_EMKO_FG_ABI",
+            "kDiscoveryOnly",
+            "kNativeMotionReady",
+            "kHudlessReady",
+            "kUiReady",
+            "kFrameGenReady"
+          )) {
+            if (-not $fgSource.Contains($requiredMarker)) { throw "RC5 FG provider marker missing: $requiredMarker" }
           }
 
       - name: End-to-end Full Neural state persistence test
         shell: powershell
         run: |
-          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc4").Path
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc5").Path
           $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Full Neural Persistence Test"
           $app = Join-Path $fake "FiveM.app"
           New-Item -ItemType Directory -Path $app -Force | Out-Null
@@ -256,7 +279,7 @@ jobs:
           $plugins = Join-Path $app "plugins"
           $ini = Join-Path $plugins "ReShade.ini"
           $bridge = Join-Path $plugins "dlss5-bridge.cfg"
-          foreach ($name in @("SecretEMKO.addon64","renodx-dlss5.addon64","dlss5-bridge.addon64","nvngx_dlssnr.dll","nvngx_dlss.dll")) {
+          foreach ($name in @("SecretEMKO.addon64","SecretEMKO-FG.addon64","renodx-dlss5.addon64","dlss5-bridge.addon64","nvngx_dlssnr.dll","nvngx_dlss.dll")) {
             if (-not (Test-Path (Join-Path $plugins $name))) { throw "Missing Full Neural backend: $name" }
           }
 
@@ -269,6 +292,11 @@ jobs:
           $iniText = [regex]::Replace($iniText, '(?m)^NRIntensity=.*$', 'NRIntensity=1.470000')
           $iniText = [regex]::Replace($iniText, '(?m)^NeuralUplift=.*$', 'NeuralUplift=0')
           $iniText = [regex]::Replace($iniText, '(?m)^BackendsNextStart=.*$', 'BackendsNextStart=0')
+          $iniText = [regex]::Replace($iniText, '(?m)^GamingStyle=.*$', 'GamingStyle=2')
+          $iniText = [regex]::Replace($iniText, '(?m)^MotionPath=.*$', 'MotionPath=1')
+          $iniText = [regex]::Replace($iniText, '(?m)^FrameGenerationBaseFPS=.*$', 'FrameGenerationBaseFPS=72')
+          $iniText = [regex]::Replace($iniText, '(?m)^FrameGenerationHUDMode=.*$', 'FrameGenerationHUDMode=1')
+          $iniText = [regex]::Replace($iniText, '(?m)^FrameGenerationAutoPause=.*$', 'FrameGenerationAutoPause=0')
           $iniText = [regex]::Replace(
             $iniText,
             '(?m)^DisabledAddons=.*$',
@@ -286,6 +314,11 @@ jobs:
           if ($after -notmatch '(?m)^NRIntensity=1\.470000\r?$') { throw "Installer reset NRIntensity" }
           if ($after -notmatch '(?m)^NeuralUplift=0\r?$') { throw "Installer re-enabled Neural Rendering" }
           if ($after -notmatch '(?m)^BackendsNextStart=0\r?$') { throw "Installer reset backend load policy" }
+          if ($after -notmatch '(?m)^GamingStyle=2\r?$') { throw "Installer reset RC5 gaming style" }
+          if ($after -notmatch '(?m)^MotionPath=1\r?$') { throw "Installer reset RC5 motion path" }
+          if ($after -notmatch '(?m)^FrameGenerationBaseFPS=72\r?$') { throw "Installer reset RC5 base FPS" }
+          if ($after -notmatch '(?m)^FrameGenerationHUDMode=1\r?$') { throw "Installer reset RC5 HUD mode" }
+          if ($after -notmatch '(?m)^FrameGenerationAutoPause=0\r?$') { throw "Installer reset RC5 FG auto-pause state" }
           if ($after -notmatch 'renodx-dlss5\.addon64' -or $after -notmatch 'dlss5-bridge\.addon64') {
             throw "Installer lost DisabledAddons backend policy"
           }
@@ -298,7 +331,7 @@ jobs:
       - name: End-to-end RP Visual isolation and restore test
         shell: powershell
         run: |
-          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc4").Path
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc5").Path
           $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO FiveM Legacy Test"
           $app = Join-Path $fake "FiveM.app"
           $oldPlugins = Join-Path $app "plugins"
@@ -342,7 +375,7 @@ jobs:
       - name: End-to-end missing plugins creation test
         shell: powershell
         run: |
-          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc4").Path
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc5").Path
           $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Missing Plugins Test"
           $app = Join-Path $fake "FiveM.app"
           New-Item -ItemType Directory -Path $app -Force | Out-Null
@@ -364,7 +397,7 @@ jobs:
       - name: Reject unsupported Full Neural hardware before modification
         shell: powershell
         run: |
-          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc4").Path
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc5").Path
           $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Unsupported Neural Test"
           $app = Join-Path $fake "FiveM.app"
           $plugins = Join-Path $app "plugins"
@@ -386,8 +419,8 @@ jobs:
       - name: Upload v2 package
         uses: actions/upload-artifact@v4
         with:
-          name: SecretEMKO-NeuralGraphics-v2.0.0-rc4
+          name: SecretEMKO-NeuralGraphics-v2.0.0-rc5
           path: |
-            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc4/**
-            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc4.zip
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc5/**
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc5.zip
           if-no-files-found: error

@@ -19,7 +19,7 @@ $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ((Split-Path -Leaf $Root) -ieq "tools") { $Root = Split-Path -Parent $Root }
 
 $Product = "SECRET EMKO Neural Graphics"
-$Version = "2.0.0-rc4"
+$Version = "2.0.0-rc5"
 $Cache = Join-Path $env:LOCALAPPDATA "SecretEMKO\cache"
 $GlobalStateRoot = Join-Path $env:LOCALAPPDATA "SecretEMKO\state"
 $Stamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -42,7 +42,7 @@ $RenoDXAddonHash = "D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C859
 function Banner {
     Write-Host ""
     Write-Host "================================================================" -ForegroundColor DarkGray
-    Write-Host " SECRET EMKO  //  NEURAL GRAPHICS v2 RC4" -ForegroundColor Cyan
+    Write-Host " SECRET EMKO  //  NEURAL GRAPHICS v2 RC5" -ForegroundColor Cyan
     Write-Host " Universal FiveM Legacy installer  |  isolated + reversible" -ForegroundColor Gray
     Write-Host "================================================================" -ForegroundColor DarkGray
     Write-Host ""
@@ -196,7 +196,7 @@ function Resolve-FiveMAppPath {
 
     $enhancedConfig = Join-Path $env:APPDATA "FiveM for GTAV Enhanced\config.toml"
     if (Test-Path -LiteralPath $enhancedConfig) {
-        throw "Only FiveM for GTAV Enhanced was detected. SECRET EMKO v2 RC4 currently targets FiveM GTA V Legacy and will not install into Enhanced."
+        throw "Only FiveM for GTAV Enhanced was detected. SECRET EMKO v2 RC5 currently targets FiveM GTA V Legacy and will not install into Enhanced."
     }
 
     throw "FiveM Legacy was not found. Start FiveM Legacy once, or run the installer with -FiveMPath <path-to-FiveM.exe>."
@@ -410,7 +410,8 @@ function Get-SecretEmkoPersistentIniState([string]$Path) {
     $keys = [ordered]@{
         "ADDON" = @("DisabledAddons")
         "SecretEMKO" = @(
-            "Profile","FrameGenerationPolicy","InstallMode","BackendsNextStart",
+            "Profile","GamingStyle","FrameGenerationPolicy","MotionPath","NRRestoreAfterFG",
+            "FrameGenerationAutoBaseFPS","FrameGenerationBaseFPS","FrameGenerationHUDMode","FrameGenerationAutoPause","InstallMode","BackendsNextStart",
             "BridgeSynth","BridgeSource","BridgeOfaGrid","BridgeOfaPerf","BridgeStage",
             "BridgeMode","BridgeSkipGame","BridgeDred","BridgeSkipExe","BridgeUnwrap","BridgeHashOut"
         )
@@ -508,6 +509,7 @@ function Restore-UpdateBackup([string]$BackupRoot, [string]$Target) {
         "ReShade.ini",
         "dlss5-bridge.cfg",
         "SecretEMKO.addon64",
+        "SecretEMKO-FG.addon64",
         "dlss5-bridge.addon64",
         "renodx-dlss5.addon64",
         "nvngx_dlssnr.dll",
@@ -640,22 +642,23 @@ if ($neuralMode) {
     $requiredPackageFiles = @(
         (Join-Path $Root "BUILD-MANIFEST.json"),
         (Join-Path $Root "SecretEMKO.addon64"),
+        (Join-Path $Root "SecretEMKO-FG.addon64"),
         (Join-Path $Root "dlss5-bridge.addon64")
     )
     $missingPackageFiles = @($requiredPackageFiles | Where-Object { -not (Test-Path -LiteralPath $_) })
     if ($missingPackageFiles.Count -gt 0) {
         Write-Host ""
         Write-Host "FULL NEURAL PACKAGE PRECHECK FAILED" -ForegroundColor Red
-        Write-Host "This folder is a source checkout/source ZIP, not the built SECRET EMKO RC4 package." -ForegroundColor Yellow
+        Write-Host "This folder is a source checkout/source ZIP, not the built SECRET EMKO RC5 package." -ForegroundColor Yellow
         Write-Host "Do not use GitHub 'Code -> Download ZIP' for Full Neural." -ForegroundColor Yellow
         Write-Host "Download the successful GitHub Actions artifact named:" -ForegroundColor Yellow
-        Write-Host "  SecretEMKO-NeuralGraphics-v2.0.0-rc4" -ForegroundColor Cyan
+        Write-Host "  SecretEMKO-NeuralGraphics-v2.0.0-rc5" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "Missing packaged files:" -ForegroundColor Gray
         foreach ($missingFile in $missingPackageFiles) {
             Write-Host ("  - " + (Split-Path -Leaf $missingFile)) -ForegroundColor Gray
         }
-        throw "Full Neural requires the built RC4 artifact. No FiveM plugins have been modified by this precheck."
+        throw "Full Neural requires the built RC5 artifact. No FiveM plugins have been modified by this precheck."
     }
 }
 
@@ -721,6 +724,7 @@ try {
         "ReShade.ini",
         "dlss5-bridge.cfg",
         "SecretEMKO.addon64",
+        "SecretEMKO-FG.addon64",
         "dlss5-bridge.addon64",
         "renodx-dlss5.addon64",
         "nvngx_dlssnr.dll",
@@ -793,6 +797,11 @@ try {
         Step "Installing SECRET EMKO neural add-on stack"
         Copy-Managed (Join-Path $Root "SecretEMKO.addon64") "SecretEMKO.addon64" $PluginsPath $Backup
         [void]$managed.Add("SecretEMKO.addon64")
+
+        Step "Installing native GTA Frame Generation discovery provider"
+        Copy-Managed (Join-Path $Root "SecretEMKO-FG.addon64") "SecretEMKO-FG.addon64" $PluginsPath $Backup
+        [void]$managed.Add("SecretEMKO-FG.addon64")
+
         Step "Installing neural runtime bridge"
         Copy-Managed (Join-Path $Root "dlss5-bridge.addon64") "dlss5-bridge.addon64" $PluginsPath $Backup
         [void]$managed.Add("dlss5-bridge.addon64")
@@ -883,7 +892,14 @@ try {
         Set-IniValue $reshadeIni "RenoDX.DLSS5" "NRScreenshotKey" "0"
 
         Ensure-IniValue $reshadeIni "SecretEMKO" "Profile" "3"
+        Ensure-IniValue $reshadeIni "SecretEMKO" "GamingStyle" "0"
         Ensure-IniValue $reshadeIni "SecretEMKO" "FrameGenerationPolicy" "0"
+        Ensure-IniValue $reshadeIni "SecretEMKO" "MotionPath" "0"
+        Ensure-IniValue $reshadeIni "SecretEMKO" "NRRestoreAfterFG" "0"
+        Ensure-IniValue $reshadeIni "SecretEMKO" "FrameGenerationAutoBaseFPS" "1"
+        Ensure-IniValue $reshadeIni "SecretEMKO" "FrameGenerationBaseFPS" "60"
+        Ensure-IniValue $reshadeIni "SecretEMKO" "FrameGenerationHUDMode" "0"
+        Ensure-IniValue $reshadeIni "SecretEMKO" "FrameGenerationAutoPause" "1"
         Set-IniValue $reshadeIni "SecretEMKO" "InstallMode" "full-neural"
 
         $neuralEnabled = Get-IniValue $reshadeIni "RenoDX.DLSS5" "NeuralUplift"
@@ -896,7 +912,7 @@ try {
             Copy-Item -LiteralPath (Join-Path $Root "config\dlss5-bridge.cfg") -Destination $bridgeCfg -Force
         }
         [void]$managed.Add("dlss5-bridge.cfg")
-        Ok "Persisted Neural/Bridge state preserved; missing keys received RC4 defaults"
+        Ok "Persisted Neural/Bridge state preserved; missing keys received RC5 defaults"
     }
     else {
         Step "Configuring RP Visual mode"
@@ -979,6 +995,7 @@ try {
     if ($neuralMode) {
         foreach ($name in @(
             "SecretEMKO.addon64",
+            "SecretEMKO-FG.addon64",
             "swapchain_override.addon64",
             "dlss5-bridge.addon64",
             "renodx-dlss5.addon64",
@@ -1011,7 +1028,7 @@ try {
     }
     if ($neuralMode) {
         Write-Host " Full Neural uses ReShade Full Add-on Support: use only where the server explicitly permits it." -ForegroundColor Yellow
-        Write-Host " Frame Generation remains gated until the FiveM FG signal/pacing path is validated." -ForegroundColor Yellow
+        Write-Host " Frame Generation remains gated until GTA shader motion, HUD-less colour, UI and pacing inputs are validated." -ForegroundColor Yellow
     } else {
         Write-Host " RP Visual uses standard ReShade only; individual server plugin policy can still block it." -ForegroundColor Yellow
     }

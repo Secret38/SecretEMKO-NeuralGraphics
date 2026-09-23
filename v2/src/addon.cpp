@@ -31,7 +31,7 @@
 namespace {
 
 constexpr const char* kProduct = "SECRET EMKO Neural Graphics";
-constexpr const char* kVersion = "2.0.0-rc4";
+constexpr const char* kVersion = "2.0.0-rc5";
 constexpr const char* kProviderSection = "RenoDX.DLSS5";
 constexpr const char* kOwnSection = "SecretEMKO";
 
@@ -40,6 +40,7 @@ std::filesystem::path g_dir;
 bool g_restart_required = false;
 bool g_loaded = false;
 bool g_policy_synced = false;
+bool g_temporal_policy_synced = false;
 bool g_backends_next_start = true;
 bool g_backend_transition_pending = false;
 bool g_provider_restart_pending = false;
@@ -134,12 +135,41 @@ constexpr std::array<Profile, 6> kProfiles = {{
      1, 1.34f, 1.10f, 1.12f, 1.68f, 1.00f, 1, 5},
 }};
 
+// RC5 user-facing looks. These are intentionally product-level looks rather
+// than raw NVIDIA model names. All three stay on the provider's proven Natural
+// model style; the one Strength control below is the live master intensity.
+struct GamingStyle {
+  const char* name;
+  const char* tagline;
+  float global_tone;
+  float local_tone;
+  float local_structure;
+  float skin_structure;
+  float default_strength;
+};
+
+constexpr std::array<GamingStyle, 3> kGamingStyles = {{
+    {"Natural", "Clean, stable and close to the original GTA image.",
+     1.05f, 1.05f, 1.35f, 1.00f, 1.20f},
+    {"Cinematic", "Softer detail with stronger local and global tone shaping.",
+     1.18f, 1.28f, 1.08f, 0.90f, 1.10f},
+    {"Detail", "Sharper surfaces and stronger micro-structure for high-end displays.",
+     1.08f, 1.08f, 1.58f, 1.00f, 1.28f},
+}};
+
 NeuralSettings g_nr;
 NeuralSettings g_saved_nr;
 BridgeSettings g_bridge;
 secretemko_live::RenoDxLiveAdapter g_live;
 int g_profile_index = 3;
-int g_fg_policy = 0; // 0 off, 1 2x, 2 3x; policy only until provider exists.
+int g_gaming_style = 0; // Natural / Cinematic / Detail
+int g_fg_policy = 0; // 0 off, 1 2x, 2 3x
+int g_motion_path = 0; // 0 auto, 1 compatibility optical-flow NR, 2 native GTA inputs
+int g_nr_restore_after_fg = 0;
+int g_fg_auto_base_fps = 1;
+int g_fg_base_fps = 60;
+int g_fg_hud_mode = 0; // 0 automatic, 1 strict, 2 off
+int g_fg_auto_pause = 1;
 
 template <typename T>
 void WriteConfig(const char* section, const char* key, const T& value) {
@@ -333,6 +363,77 @@ bool BridgeLoaded() {
 
 bool NeuralBackendsLoaded() {
   return RenoDxLoaded() && BridgeLoaded();
+}
+
+bool FrameGenRuntimeInstalled() {
+  return FileExists(L"sl.interposer.dll") &&
+         FileExists(L"sl.dlss_g.dll") &&
+         FileExists(L"nvngx_dlssg.dll");
+}
+
+bool FrameGenProviderInstalled() {
+  return FileExists(L"SecretEMKO-FG.addon64");
+}
+
+bool FrameGenProviderLoaded() {
+  return ModuleLoaded(L"SecretEMKO-FG.addon64");
+}
+
+enum FgProviderFlags : uint32_t {
+  kFgInitialized       = 1u << 0,
+  kFgD3D11Observed     = 1u << 1,
+  kFgDepthObserved     = 1u << 2,
+  kFgRenderTargetSeen  = 1u << 3,
+  kFgNativeMotionReady = 1u << 4,
+  kFgHudlessReady      = 1u << 5,
+  kFgUiReady           = 1u << 6,
+  kFgStreamlineReady   = 1u << 7,
+  kFgFrameGenReady     = 1u << 8,
+  kFgNrSharedReady     = 1u << 9,
+  kFgDiscoveryOnly     = 1u << 10,
+};
+
+struct FgProviderStatusV1 {
+  uint32_t abi = 0;
+  uint32_t struct_size = 0;
+  uint64_t presented_frames = 0;
+  uint64_t depth_binds = 0;
+  uint64_t render_target_binds = 0;
+  uint32_t device_api = 0;
+  uint32_t flags = 0;
+};
+
+bool QueryFrameGenProvider(FgProviderStatusV1& status) {
+  HMODULE module = GetModuleHandleW(L"SecretEMKO-FG.addon64");
+  if (module == nullptr) return false;
+  using Fn = bool (*)(FgProviderStatusV1*, uint32_t);
+  auto fn = reinterpret_cast<Fn>(GetProcAddress(module, "SecretEMKO_FG_GetStatus"));
+  if (fn == nullptr) return false;
+  FgProviderStatusV1 next{};
+  if (!fn(&next, sizeof(next)) || next.abi != 1 || next.struct_size < sizeof(FgProviderStatusV1))
+    return false;
+  status = next;
+  return true;
+}
+
+bool NativeMotionReady() {
+  FgProviderStatusV1 s{};
+  return QueryFrameGenProvider(s) && (s.flags & kFgNativeMotionReady) != 0;
+}
+
+bool NativeNrSharedReady() {
+  FgProviderStatusV1 s{};
+  return QueryFrameGenProvider(s) && (s.flags & kFgNrSharedReady) != 0;
+}
+
+bool FrameGenReady() {
+  FgProviderStatusV1 s{};
+  return FrameGenRuntimeInstalled() &&
+         QueryFrameGenProvider(s) &&
+         (s.flags & kFgFrameGenReady) != 0 &&
+         (s.flags & kFgNativeMotionReady) != 0 &&
+         (s.flags & kFgHudlessReady) != 0 &&
+         (s.flags & kFgUiReady) != 0;
 }
 
 std::string ReadConfigString(const char* section, const char* key) {
@@ -621,10 +722,24 @@ void LoadNeuralSettings(bool apply_live = false) {
   ReadConfig(kProviderSection, "NRMVecScaleX", g_nr.mv_scale_x);
   ReadConfig(kProviderSection, "NRMVecScaleY", g_nr.mv_scale_y);
   ReadConfig(kOwnSection, "Profile", g_profile_index);
+  ReadConfig(kOwnSection, "GamingStyle", g_gaming_style);
   ReadConfig(kOwnSection, "FrameGenerationPolicy", g_fg_policy);
+  ReadConfig(kOwnSection, "MotionPath", g_motion_path);
+  ReadConfig(kOwnSection, "NRRestoreAfterFG", g_nr_restore_after_fg);
+  ReadConfig(kOwnSection, "FrameGenerationAutoBaseFPS", g_fg_auto_base_fps);
+  ReadConfig(kOwnSection, "FrameGenerationBaseFPS", g_fg_base_fps);
+  ReadConfig(kOwnSection, "FrameGenerationHUDMode", g_fg_hud_mode);
+  ReadConfig(kOwnSection, "FrameGenerationAutoPause", g_fg_auto_pause);
 
   g_profile_index = std::clamp(g_profile_index, 0, static_cast<int>(kProfiles.size()) - 1);
+  g_gaming_style = std::clamp(g_gaming_style, 0, static_cast<int>(kGamingStyles.size()) - 1);
   g_fg_policy = std::clamp(g_fg_policy, 0, 2);
+  g_motion_path = std::clamp(g_motion_path, 0, 2);
+  g_nr_restore_after_fg = g_nr_restore_after_fg ? 1 : 0;
+  g_fg_auto_base_fps = g_fg_auto_base_fps ? 1 : 0;
+  g_fg_base_fps = std::clamp(g_fg_base_fps, 20, 240);
+  g_fg_hud_mode = std::clamp(g_fg_hud_mode, 0, 2);
+  g_fg_auto_pause = g_fg_auto_pause ? 1 : 0;
   int backends = g_nr.enabled != 0 ? 1 : 0;
   ReadConfig(kOwnSection, "BackendsNextStart", backends);
   g_backends_next_start = backends != 0;
@@ -674,7 +789,155 @@ void ApplyProfile(int index) {
   WriteBridgeConfig(false);
 }
 
+void ApplyGamingStyle(int index, bool reset_strength = false) {
+  index = std::clamp(index, 0, static_cast<int>(kGamingStyles.size()) - 1);
+  const auto& style = kGamingStyles[index];
+  g_gaming_style = index;
+
+  // Keep the proven Natural provider model for all product looks. The visible
+  // difference comes from live tone/structure tuning, not from pretending that
+  // three independent neural networks exist.
+  g_nr.style = 1;
+  g_nr.preset = 0;
+  g_nr.global_tone = style.global_tone;
+  g_nr.local_tone = style.local_tone;
+  g_nr.local_structure = style.local_structure;
+  g_nr.skin_structure = style.skin_structure;
+  g_nr.auto_mask = 1;
+  g_nr.ui_correction = 1;
+  g_nr.enable_upscaling = 0;
+  if (reset_strength) g_nr.intensity = style.default_strength;
+  g_nr.enabled = (g_fg_policy == 0 || NativeNrSharedReady()) ? 1 : 0;
+
+  WriteConfig(kOwnSection, "GamingStyle", g_gaming_style);
+  SetBackendLoadPolicy(true);
+  WriteNeuralSettings();
+}
+
+void PersistFrameGenerationSettings() {
+  WriteConfig(kOwnSection, "FrameGenerationPolicy", g_fg_policy);
+  WriteConfig(kOwnSection, "MotionPath", g_motion_path);
+  WriteConfig(kOwnSection, "NRRestoreAfterFG", g_nr_restore_after_fg);
+  WriteConfig(kOwnSection, "FrameGenerationAutoBaseFPS", g_fg_auto_base_fps);
+  WriteConfig(kOwnSection, "FrameGenerationBaseFPS", g_fg_base_fps);
+  WriteConfig(kOwnSection, "FrameGenerationHUDMode", g_fg_hud_mode);
+  WriteConfig(kOwnSection, "FrameGenerationAutoPause", g_fg_auto_pause);
+}
+
+void ApplyCompatibilityMotionPath() {
+  g_motion_path = 1;
+  if (g_fg_policy != 0) g_fg_policy = 0;
+  if (g_nr_restore_after_fg) {
+    g_nr.enabled = 1;
+    g_nr_restore_after_fg = 0;
+    WriteNeuralSettings();
+  }
+
+  // The compatibility path belongs to synthetic Neural Rendering only. Keep
+  // the bridge's NVIDIA Optical Flow input, but never run it beside native FG.
+  g_bridge.synth = 1;
+  g_bridge.source = 1;
+  if (g_bridge.ofa_grid == 0) g_bridge.ofa_grid = 2;
+  g_bridge.stage = 3;
+  g_bridge.mode = 2;
+  WriteBridgeConfig(g_nr.enabled == 0);
+  PersistFrameGenerationSettings();
+}
+
+bool ApplyNativeFrameGenPath(int policy);
+
+void EnsureTemporalPolicy() {
+  if (g_temporal_policy_synced) return;
+
+  const int requested_motion = g_motion_path;
+  const int requested_fg = g_fg_policy;
+
+  if (requested_fg != 0) {
+    if (!ApplyNativeFrameGenPath(requested_fg)) {
+      // Stale config or provider regression: fail closed, restore the known
+      // compatibility path and never present a saved 2x/3x selection as active.
+      ApplyCompatibilityMotionPath();
+      if (requested_motion == 0) {
+        g_motion_path = 0;
+        PersistFrameGenerationSettings();
+      }
+      g_backend_status = "Saved Frame Generation state was rejected because verified GTA shader-motion/HUD inputs are not ready.";
+    }
+  } else if (requested_motion == 2 && NativeMotionReady()) {
+    g_bridge.synth = 0;
+    g_bridge.source = 3;
+    WriteBridgeConfig(true);
+  } else {
+    ApplyCompatibilityMotionPath();
+    if (requested_motion == 0) {
+      g_motion_path = 0;
+      PersistFrameGenerationSettings();
+    }
+  }
+
+  g_temporal_policy_synced = true;
+}
+
+bool ApplyNativeFrameGenPath(int policy) {
+  policy = std::clamp(policy, 0, 2);
+  if (policy == 0) {
+    g_fg_policy = 0;
+    if (g_motion_path == 0 || g_motion_path == 1) {
+      g_motion_path = 1;
+      g_bridge.synth = 1;
+      g_bridge.source = 1;
+      if (g_bridge.ofa_grid == 0) g_bridge.ofa_grid = 2;
+      WriteBridgeConfig(g_nr.enabled == 0);
+    }
+    if (g_nr_restore_after_fg) {
+      g_nr.enabled = 1;
+      g_nr_restore_after_fg = 0;
+      WriteNeuralSettings();
+    }
+    PersistFrameGenerationSettings();
+    return true;
+  }
+
+  if (!FrameGenReady()) return false;
+
+  // Native FG and the compatibility OFA contract must not own temporal input
+  // simultaneously. The native provider owns motion/depth/HUD/pacing here.
+  g_motion_path = 2;
+  g_fg_policy = policy;
+  g_bridge.synth = 0;
+  g_bridge.source = 3;
+  WriteBridgeConfig(true);
+
+  // Native motion itself is compatible with NR+FG. Keep NR only when the native
+  // provider explicitly advertises a shared, frame-aligned NR contract.
+  if (g_nr.enabled && !NativeNrSharedReady()) {
+    g_nr_restore_after_fg = 1;
+    g_nr.enabled = 0;
+    WriteNeuralSettings();
+  }
+
+  PersistFrameGenerationSettings();
+  return true;
+}
+
 void SetNeuralEnabled(bool enabled) {
+  if (enabled && g_fg_policy != 0) {
+    if (!NativeNrSharedReady()) {
+      g_nr.enabled = 0;
+      g_backend_status = "Neural Rendering stays off while Frame Generation is active until the GTA shader-motion provider exposes a shared, frame-aligned NR contract.";
+      WriteNeuralSettings();
+      return;
+    }
+
+    g_nr.enabled = 1;
+    SetBackendLoadPolicy(true);
+    WriteNeuralSettings();
+    // Native provider owns temporal input while FG is active; never wake the
+    // Optical Flow compatibility bridge in this state.
+    WriteBridgeConfig(true);
+    return;
+  }
+
   g_nr.enabled = enabled ? 1 : 0;
 
   if (enabled) {
@@ -754,32 +1017,82 @@ int CountReady() {
 }
 
 void DrawHeader() {
-  ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.0f);
-  ImGui::BeginChild("##se_header", ImVec2(0, 86), true);
+  RefreshBridgeRuntimeSnapshot();
+
+  ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
+  ImGui::BeginChild("##se_header", ImVec2(0, 72), true);
   ImGui::TextUnformatted("SECRET EMKO");
   ImGui::SameLine();
-  ImGui::TextDisabled("NEURAL GRAPHICS");
+  ImGui::TextDisabled("NEURAL GRAPHICS  /  RC5");
+  ImGui::TextDisabled("FiveM GTA V Legacy");
+
+  const char* neural = !NeuralStackInstalled() ? "VISUAL"
+                       : g_bridge_runtime.delivery_confirmed ? "ACTIVE"
+                       : g_bridge_runtime.synth_blocked ? "BLOCKED"
+                       : "READY";
+  const char* fg = FrameGenReady() ? (g_fg_policy == 0 ? "READY" : "ARMED") : "LOCKED";
+  ImGui::Text("NEURAL  %s", neural);
+  ImGui::SameLine(170.0f);
+  ImGui::Text("FRAME GEN  %s", fg);
+  ImGui::EndChild();
+  ImGui::PopStyleVar(2);
+
+  if (g_restart_required)
+    ImGui::TextDisabled("Restart required for a pending backend/provider change.");
+}
+
+void DrawGamingGraphics() {
   const bool neural_stack = NeuralStackInstalled();
-  ImGui::TextDisabled(neural_stack
-      ? "FiveM GTA V Legacy  |  Full Neural mode  |  v2.0 RC4"
-      : "FiveM GTA V Legacy  |  Visual compatibility mode  |  v2.0 RC4");
-  const float readiness = static_cast<float>(CountReady()) / 6.0f;
-  char overlay[64];
-  sprintf_s(overlay, "Core stack %.0f%% installed", readiness * 100.0f);
-  ImGui::ProgressBar(readiness, ImVec2(-1, 0), overlay);
-  if (neural_stack) {
-    RefreshBridgeRuntimeSnapshot();
-    ImGui::TextWrapped("Neural pipeline: %s", g_bridge_runtime.state.c_str());
+  ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.0f);
+  ImGui::BeginChild("##graphics_card", ImVec2(0, 0), true);
+
+  ImGui::TextUnformatted("NEURAL GRAPHICS");
+  ImGui::TextDisabled("Three looks. One strength control. Changes apply live when the verified provider is active.");
+  ImGui::Spacing();
+
+  bool enabled = g_nr.enabled != 0;
+  if (ImGui::Checkbox("Enabled", &enabled))
+    SetNeuralEnabled(enabled);
+
+  ImGui::Spacing();
+  ImGui::TextDisabled("STYLE");
+
+  const float gap = 8.0f;
+  const float width = std::max(90.0f, (ImGui::GetContentRegionAvail().x - gap * 2.0f) / 3.0f);
+  for (int i = 0; i < static_cast<int>(kGamingStyles.size()); ++i) {
+    if (i != 0) ImGui::SameLine(0.0f, gap);
+    const bool selected = g_gaming_style == i;
+    if (selected) ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 2.0f);
+    std::string label = std::string(kGamingStyles[i].name) + "##gaming_style_" + std::to_string(i);
+    if (ImGui::Button(label.c_str(), ImVec2(width, 38.0f)))
+      ApplyGamingStyle(i, true);
+    if (selected) ImGui::PopStyleVar();
   }
+
+  ImGui::TextWrapped("%s", kGamingStyles[g_gaming_style].tagline);
+  ImGui::Spacing();
+
+  float strength = g_nr.intensity;
+  ImGui::SetNextItemWidth(-1.0f);
+  if (ImGui::SliderFloat("##gaming_strength", &strength, 0.0f, 2.0f, "Strength  %.2f")) {
+    g_nr.intensity = strength;
+    WriteNeuralSettings();
+  }
+  ImGui::TextDisabled("0.00 = effect off  |  1.00 = balanced  |  2.00 = maximum");
+
+  ImGui::Spacing();
+  if (!neural_stack)
+    ImGui::TextWrapped("Full Neural is not installed. The visual ReShade preset remains available.");
+  else if (RenoDxLoaded() && g_live.available())
+    ImGui::TextDisabled("LIVE  /  provider callback + readback active");
+  else if (g_nr.enabled)
+    ImGui::TextDisabled("SAVED  /  provider will apply after its backend is available");
+  else
+    ImGui::TextDisabled("OFF");
+
   ImGui::EndChild();
   ImGui::PopStyleVar();
-
-  if (g_restart_required) {
-    ImGui::TextWrapped("Restart required for at least one pending change: either a backend must be loaded for the next session or a provider-only value is not part of the verified RenoDX v4.70 live-control surface.");
-  }
-  if (!g_backend_status.empty()) {
-    ImGui::TextDisabled("%s", g_backend_status.c_str());
-  }
 }
 
 void DrawOverview() {
@@ -1007,6 +1320,40 @@ void DrawQuality() {
   ImGui::TextWrapped("Tune in motion, not on a paused frame. Check thin fences, hair, vegetation, distant signage, emissive edges and translucent HUD elements. A higher structure number is not automatically a higher-quality result if it creates temporal crawl.");
 }
 
+void DrawMotionPolicy() {
+  ImGui::SeparatorText("Temporal input policy");
+  ImGui::TextWrapped("Compatibility Optical Flow and native Frame Generation are mutually exclusive. GTA shader motion is the path that can eventually feed both Neural Rendering and Frame Generation.");
+
+  const char* modes[] = {"Auto (recommended)", "Compatibility motion (NR only)", "GTA shader motion"};
+  int requested = g_motion_path;
+  ImGui::SetNextItemWidth(320.0f);
+  if (ImGui::Combo("Motion / FG input", &requested, modes, IM_ARRAYSIZE(modes))) {
+    if (requested == 1) {
+      ApplyCompatibilityMotionPath();
+    } else if (requested == 2) {
+      if (NativeMotionReady()) {
+        g_motion_path = 2;
+        g_bridge.synth = 0;
+        g_bridge.source = 3;
+        WriteBridgeConfig(true);
+        PersistFrameGenerationSettings();
+      }
+    } else {
+      g_motion_path = 0;
+      if (g_fg_policy == 0) ApplyCompatibilityMotionPath();
+      g_motion_path = 0;
+      PersistFrameGenerationSettings();
+    }
+  }
+
+  if (g_motion_path == 2 && !NativeMotionReady())
+    ImGui::TextWrapped("GTA shader motion is not ready yet; SECRET EMKO keeps Frame Generation locked.");
+  else if (g_motion_path == 1)
+    ImGui::TextDisabled("Compatibility mode: NVIDIA Optical Flow may feed synthetic NR; Frame Generation is forced off.");
+  else
+    ImGui::TextDisabled("Auto: compatibility motion while FG is off; native GTA inputs whenever FG is enabled.");
+}
+
 void DrawBridge() {
   if (!NeuralStackInstalled()) {
     ImGui::TextWrapped("DLSS 5 Bridge is not installed in visual compatibility mode.");
@@ -1071,20 +1418,90 @@ void DrawBridge() {
 }
 
 void DrawFrameGeneration() {
-  const bool files_ready = FileExists(L"sl.dlss_g.dll") && FileExists(L"nvngx_dlssg.dll");
-  ImGui::SeparatorText("Frame Generation readiness");
-  ImGui::Text("Streamline/DLSSG runtime files: %s", files_ready ? "present" : "not installed");
-  ImGui::TextWrapped("The runtime DLLs are only dependencies. FiveM Legacy still needs a validated Frame Generation input path with motion vectors, depth, HUD-less colour, swapchain ownership and frame pacing.");
+  const bool runtime = FrameGenRuntimeInstalled();
+  const bool provider = FrameGenProviderInstalled();
+  const bool loaded = FrameGenProviderLoaded();
+  const bool ready = FrameGenReady();
 
-  ImGui::BeginDisabled(true);
-  const char* modes[] = {"Off", "2x total", "3x total"};
-  ImGui::SetNextItemWidth(260.f);
-  ImGui::Combo("Secret EMKO FG multiplier", &g_fg_policy, modes, IM_ARRAYSIZE(modes));
+  ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.0f);
+  ImGui::BeginChild("##fg_card", ImVec2(0, 0), true);
+  ImGui::TextUnformatted("FRAME GENERATION");
+  ImGui::TextDisabled("Simple controls; the native GTA input provider owns timing, HUD separation and generated-frame delivery.");
+  ImGui::Spacing();
+
+  FgProviderStatusV1 provider_status{};
+  const bool provider_status_ok = QueryFrameGenProvider(provider_status);
+  if (!ready) {
+    ImGui::TextWrapped("Locked until GTA shader motion, depth, HUD-less colour and UI inputs are all verified.");
+    ImGui::TextDisabled("Runtime: %s  |  Provider: %s",
+                        runtime ? "ready" : "missing",
+                        provider ? (loaded ? "discovery" : "restart required") : "missing");
+    if (provider_status_ok) {
+      ImGui::TextDisabled("Discovery: D3D11 %s / depth %s / render targets %s / shader motion %s",
+                          (provider_status.flags & kFgD3D11Observed) ? "yes" : "no",
+                          (provider_status.flags & kFgDepthObserved) ? "yes" : "no",
+                          (provider_status.flags & kFgRenderTargetSeen) ? "yes" : "no",
+                          (provider_status.flags & kFgNativeMotionReady) ? "ready" : "not ready");
+    }
+  }
+
+  ImGui::TextDisabled("MODE");
+  const float gap = 8.0f;
+  const float width = std::max(90.0f, (ImGui::GetContentRegionAvail().x - gap * 2.0f) / 3.0f);
+  if (ImGui::Button("Off", ImVec2(width, 38.0f)))
+    (void)ApplyNativeFrameGenPath(0);
+  ImGui::SameLine(0.0f, gap);
+  ImGui::BeginDisabled(!ready);
+  if (ImGui::Button("2x", ImVec2(width, 38.0f)))
+    (void)ApplyNativeFrameGenPath(1);
+  ImGui::SameLine(0.0f, gap);
+  if (ImGui::Button("3x", ImVec2(width, 38.0f)))
+    (void)ApplyNativeFrameGenPath(2);
   ImGui::EndDisabled();
-  Help("Intentionally locked in this preview. Secret EMKO will not claim Frame Generation is active just because nvngx_dlssg.dll exists.");
+
+  ImGui::BeginDisabled(!ready || g_fg_policy == 0);
+  ImGui::Spacing();
+  if (g_fg_policy == 0)
+    ImGui::TextDisabled("Input path: Compatibility motion for Neural Rendering");
+  else
+    ImGui::TextDisabled("Input path: GTA shader motion + depth + HUD separation");
 
   ImGui::Spacing();
-  ImGui::TextWrapped("Product policy remains 2x/3x total maximum. 4x and higher will not be exposed when the FiveM FG provider is implemented.");
+  bool auto_base = g_fg_auto_base_fps != 0;
+  if (ImGui::Checkbox("Automatic base FPS", &auto_base)) {
+    g_fg_auto_base_fps = auto_base ? 1 : 0;
+    PersistFrameGenerationSettings();
+  }
+  Help("The provider will derive a stable base-frame target from display timing and the selected multiplier.");
+
+  if (!g_fg_auto_base_fps) {
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::SliderInt("##base_fps", &g_fg_base_fps, 20, 240, "Base FPS  %d")) {
+      PersistFrameGenerationSettings();
+    }
+  } else {
+    ImGui::TextDisabled("Base FPS  AUTO");
+  }
+
+  ImGui::Spacing();
+  ImGui::TextDisabled("HUD PROTECTION");
+  const char* hud_modes[] = {"Automatic", "Strict", "Off"};
+  ImGui::SetNextItemWidth(-1.0f);
+  if (ImGui::Combo("##hud_mode", &g_fg_hud_mode, hud_modes, IM_ARRAYSIZE(hud_modes)))
+    PersistFrameGenerationSettings();
+  Help("Automatic is the normal mode: capture HUD-less scene color and UI alpha separately, then recompose UI after generated frames.");
+
+  bool auto_pause = g_fg_auto_pause != 0;
+  if (ImGui::Checkbox("Pause FG in menus / loading / resolution changes", &auto_pause)) {
+    g_fg_auto_pause = auto_pause ? 1 : 0;
+    PersistFrameGenerationSettings();
+  }
+  ImGui::EndDisabled();
+
+  ImGui::Spacing();
+  ImGui::TextDisabled("Quality policy: no Optical Flow-only FG. The target provider requires shader-injected GTA motion, depth, HUD-less color and UI data.");
+  ImGui::EndChild();
+  ImGui::PopStyleVar();
 }
 
 void DrawDiagnostics() {
@@ -1098,6 +1515,7 @@ void DrawDiagnostics() {
     const std::pair<const wchar_t*, const char*> rows[] = {
       {L"dxgi.dll", "ReShade"},
       {L"SecretEMKO.addon64", "Secret EMKO"},
+      {L"SecretEMKO-FG.addon64", "SECRET EMKO FG Provider"},
       {L"dlss5-bridge.addon64", "DLSS 5 Bridge"},
       {L"renodx-dlss5.addon64", "RenoDX DLSS 5"},
       {L"nvngx_dlss.dll", "DLSS SR"},
@@ -1113,6 +1531,24 @@ void DrawDiagnostics() {
       ImGui::TableSetColumnIndex(2); ImGui::TextUnformatted(ModuleLoaded(file) ? "yes" : "no");
     }
     ImGui::EndTable();
+  }
+
+  ImGui::Spacing();
+  ImGui::SeparatorText("GTA shader-motion / Frame Gen provider");
+  FgProviderStatusV1 fg_status{};
+  if (QueryFrameGenProvider(fg_status)) {
+    ImGui::Text("Provider ABI: %u  |  frames observed: %llu",
+                fg_status.abi, static_cast<unsigned long long>(fg_status.presented_frames));
+    ImGui::BulletText("D3D11 observed: %s", (fg_status.flags & kFgD3D11Observed) ? "yes" : "no");
+    ImGui::BulletText("Depth activity: %s", (fg_status.flags & kFgDepthObserved) ? "yes" : "no");
+    ImGui::BulletText("Render-target activity: %s", (fg_status.flags & kFgRenderTargetSeen) ? "yes" : "no");
+    ImGui::BulletText("GTA shader motion: %s", (fg_status.flags & kFgNativeMotionReady) ? "ready" : "discovery");
+    ImGui::BulletText("HUD-less color: %s", (fg_status.flags & kFgHudlessReady) ? "ready" : "discovery");
+    ImGui::BulletText("UI input: %s", (fg_status.flags & kFgUiReady) ? "ready" : "discovery");
+    ImGui::BulletText("Frame Generation: %s", (fg_status.flags & kFgFrameGenReady) ? "ready" : "locked");
+    ImGui::BulletText("Shared NR contract: %s", (fg_status.flags & kFgNrSharedReady) ? "ready" : "not ready");
+  } else {
+    ImGui::TextDisabled("Native provider status unavailable.");
   }
 
   ImGui::Spacing();
@@ -1168,6 +1604,7 @@ void DrawOverlay(reshade::api::effect_runtime* runtime) {
     LoadBridgeConfig();
     g_loaded = true;
   }
+  EnsureTemporalPolicy();
 
   // Validate/hide the RenoDX backend page and discover its live controls before
   // drawing SECRET EMKO. This does not patch unknown RenoDX builds.
@@ -1176,14 +1613,18 @@ void DrawOverlay(reshade::api::effect_runtime* runtime) {
   DrawHeader();
 
   if (ImGui::BeginTabBar("##se_tabs")) {
-    if (ImGui::BeginTabItem("Overview")) { DrawOverview(); ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("Styles")) { DrawProfiles(); ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("Neural")) { DrawNeural(); ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("Quality")) { DrawQuality(); ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("Bridge")) { DrawBridge(); ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("Frame Generation")) { DrawFrameGeneration(); ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("Diagnostics")) { DrawDiagnostics(); ImGui::EndTabItem(); }
-    if (ImGui::BeginTabItem("About")) { DrawAbout(); ImGui::EndTabItem(); }
+    if (ImGui::BeginTabItem("Graphics")) { DrawGamingGraphics(); ImGui::EndTabItem(); }
+    if (ImGui::BeginTabItem("Frame Gen")) { DrawFrameGeneration(); ImGui::EndTabItem(); }
+    if (ImGui::BeginTabItem("Advanced")) {
+      if (ImGui::CollapsingHeader("Motion / Frame Gen policy", ImGuiTreeNodeFlags_DefaultOpen)) DrawMotionPolicy();
+      if (ImGui::CollapsingHeader("Neural provider")) DrawNeural();
+      if (ImGui::CollapsingHeader("Quality")) DrawQuality();
+      if (ImGui::CollapsingHeader("Compatibility bridge")) DrawBridge();
+      if (ImGui::CollapsingHeader("Legacy profiles")) DrawProfiles();
+      if (ImGui::CollapsingHeader("About")) DrawAbout();
+      ImGui::EndTabItem();
+    }
+    if (ImGui::BeginTabItem("Status")) { DrawDiagnostics(); ImGui::EndTabItem(); }
     ImGui::EndTabBar();
   }
 
@@ -1210,6 +1651,7 @@ void OnOverlayFrame(reshade::api::effect_runtime* runtime) {
     LoadBridgeConfig();
     g_loaded = true;
   }
+  EnsureTemporalPolicy();
 
   g_live.tick(runtime);
 

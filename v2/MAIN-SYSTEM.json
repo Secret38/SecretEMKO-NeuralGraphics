@@ -1,6 +1,6 @@
 {
   "product": "SECRET EMKO Neural Graphics",
-  "version": "2.0.0-rc4",
+  "version": "2.0.0-rc5",
   "role": "main-system",
   "installer": {
     "target": "FiveM GTA V Legacy x64",
@@ -95,6 +95,37 @@
       "motion_vectors": "ofa_grid 1/2/4 uses DLSS 5 Bridge internal NVIDIA Optical Flow; grid 0 is the explicit external ReShade motion-vector-provider mode.",
       "sr_runtime": "SECRET EMKO preloads the pinned nvngx_dlss.dll from plugins and relays the same file beside FiveM's dynamic data/cache/subprocess host via hardlink, with copy fallback. It never writes beside unrelated executables.",
       "runtime_status": "UI distinguishes installed files from ARMED/BLOCKED/ACTIVE runtime state; ACTIVE requires delivered-frame telemetry from the current bridge session."
+    },
+    "simpleGamingUI": {
+      "primary_tabs": [
+        "Graphics",
+        "Frame Gen",
+        "Advanced",
+        "Status"
+      ],
+      "graphics_styles": [
+        "Natural",
+        "Cinematic",
+        "Detail"
+      ],
+      "realtime_strength": "0.00-2.00 through verified RenoDX callback/readback when available",
+      "advanced_policy": "raw provider/bridge controls are hidden under Advanced"
+    },
+    "nativeFrameGeneration": {
+      "provider": "SecretEMKO-FG.addon64",
+      "readiness": "fail closed; Streamline/DLSSG DLL presence alone is never treated as a functional FG provider",
+      "normal_controls": [
+        "Off / 2x / 3x",
+        "base FPS automatic/manual",
+        "HUD protection",
+        "automatic pause"
+      ],
+      "motion": "shader-injected GTA motion is the production target; optical flow is not accepted for production FG",
+      "hud": "capture HUD-less scene color plus UI alpha/color separately, then recompose",
+      "architecture_doc": "FRAMEGEN-NATIVE.md",
+      "provider_state": "RC5 packages a discovery-only provider with ABI/status exports. It observes D3D11/depth/render-target activity but intentionally does not report FG ready until shader motion + HUD/UI + delivery are implemented.",
+      "coexistence": "Compatibility Optical Flow and Frame Generation are mutually exclusive. GTA shader motion can be shared with NR+FG when the provider explicitly reports a shared frame-aligned NR contract.",
+      "fail_closed": "Saved 2x/3x state is rejected at startup if provider readiness regresses; SECRET EMKO restores the compatibility NR path instead of presenting stale FG as active."
     }
   }
 }

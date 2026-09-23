@@ -3,7 +3,7 @@
 **Modern visual and neural-rendering control system for FiveM GTA V Legacy x64.**  
 Created and maintained by **Secret EMKO** · GitHub owner: **@Secret38**
 
-Current release candidate: **v2.0.0-rc4**
+Current release candidate: **v2.0.0-rc5**
 
 > One product. One installer. One control surface.  
 > ReShade, RenoDX, DLSS 5 Bridge and NVIDIA runtimes are treated as backend technologies where required — the user-facing product is **SECRET EMKO Neural Graphics**.
@@ -55,7 +55,7 @@ The source archive intentionally does not contain the compiled native add-ons.
 Download the latest successful GitHub Actions artifact named:
 
 ```text
-SecretEMKO-NeuralGraphics-v2.0.0-rc4
+SecretEMKO-NeuralGraphics-v2.0.0-rc5
 ```
 
 Then:
@@ -117,7 +117,7 @@ Supported RenoDX settings are applied through the verified provider's own settin
 
 Bridge settings are written to `dlss5-bridge.cfg`; the bridge re-reads its configuration while the game is running.
 
-RC4 pins DLSS 5 Bridge `v1.4.13-pre8` because its synthetic path can generate motion guidance with NVIDIA Optical Flow (`ofa_grid=1/2/4`). SECRET EMKO preloads the pinned `nvngx_dlss.dll` from the managed plugins directory and relays it only into FiveM's disposable `data\\cache\\subprocess` host when NGX requires an executable-local SR snippet. The UI now distinguishes **installed**, **armed**, **blocked** and **active**; file presence alone is not reported as proof of Neural Rendering.
+RC5 pins DLSS 5 Bridge `v1.4.13-pre8` because its synthetic path can generate motion guidance with NVIDIA Optical Flow (`ofa_grid=1/2/4`). SECRET EMKO preloads the pinned `nvngx_dlss.dll` from the managed plugins directory and relays it only into FiveM's disposable `data\\cache\\subprocess` host when NGX requires an executable-local SR snippet. The UI now distinguishes **installed**, **armed**, **blocked** and **active**; file presence alone is not reported as proof of Neural Rendering.
 
 Persistent state is stored in:
 
@@ -138,7 +138,7 @@ Native third-party add-ons are intentionally **not force-unloaded with FreeLibra
 
 ## Compatibility boundaries
 
-Current RC4 target:
+Current RC5 target:
 
 ```text
 FiveM
@@ -207,3 +207,9 @@ See `v2/THIRD_PARTY_NOTICES.md` for the complete attribution and provenance reco
 SECRET EMKO's own v2 source is released under the **MIT License**.
 
 Third-party components remain under their respective licenses and notices.
+
+## RC5 gaming interface
+
+The normal Full Neural UI is reduced to four tabs: **Graphics**, **Frame Gen**, **Advanced**, and **Status**. Graphics exposes three looks — **Natural**, **Cinematic**, and **Detail** — plus one live **Strength** slider from 0.00 to 2.00. Raw provider and bridge settings remain available only under Advanced.
+
+Frame Generation has a simple product contract: **Off / 2x / 3x**, automatic or manual base FPS, automatic HUD protection, and automatic pause during menus/loading/display changes. The switch remains fail-closed until a real `SecretEMKO-FG.addon64` native GTA V Legacy input provider exists; Streamline/DLSSG DLL presence alone is not reported as working Frame Generation. See `v2/FRAMEGEN-NATIVE.md`.
