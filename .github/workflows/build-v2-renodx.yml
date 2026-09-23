@@ -130,6 +130,17 @@ jobs:
         run: |
           .\v2\tools\build.ps1
 
+      - name: Verify SECRET EMKO add-on exports
+        shell: powershell
+        run: |
+          $addon = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3\SecretEMKO.addon64"
+          $exports = (& dumpbin /nologo /exports $addon | Out-String)
+          foreach ($symbol in @("AddonInit","AddonUninit","NAME","DESCRIPTION")) {
+            if ($exports -notmatch ("\b" + [regex]::Escape($symbol) + "\b")) {
+              throw "Missing exported add-on symbol: $symbol"
+            }
+          }
+
       - name: Verify release files
         shell: powershell
         run: |
