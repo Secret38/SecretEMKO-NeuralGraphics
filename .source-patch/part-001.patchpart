@@ -1,0 +1,310 @@
++Neural graphics for FiveM (GTA V Legacy, 64-bit Windows), built to feel like a
++setting the game already had rather than a stack of mods.
++
++## For players
++
++Install it, start FiveM, press **Home**.
++
++```
++Look        Natural   Cinematic   Detail
++Strength    0.00 ──────── 1.00 ──────── 2.00
++Protect     Quality   Balanced   Performance
++Frames      Off    2x    3x
++```
++
++Strength 1.00 is not the middle of a range — it is the tuned point for the look
++you picked. Move away from it deliberately, not to "find" it.
++
++"Protect" is the one question that decides everything the software would
++otherwise have to guess: render resolution, how much frame time the pipeline may
++spend, and how quickly it gives detail up. On **Quality** the scene renders at
++full resolution, so the neural pass is antialiasing rather than reconstructing —
++the best-looking mode.
++
++That is the whole interface. Motion, depth, interface separation, which
++components load, how fast the game renders underneath a frame generator, and
++what to do when something breaks are all handled for you.
++
++### Installing
++
++Download the **built GitHub Actions artifact**, extract it completely, then double-click **`SECRET-EMKO.bat`**. Do not use GitHub **Code → Download ZIP** as the player installer: that archive contains source code and intentionally has no compiled add-ons.
++
++There is one installer and it works out what your machine can run. If you have a
++GeForce RTX 50 series card it installs the full neural stack; otherwise it
++installs the visual stack and tells you why. You can see exactly what it intends
++to do before it touches anything:
++
++```
++SECRET-EMKO.bat -WhatIf
++```
++
++To remove it, **`UNINSTALL.bat`**. It replays the install journal backwards and
++puts your machine back as it was, file by file.
++
++### Supply chain and downloads
++
++The player ZIP contains SECRET EMKO's compiled add-ons and the hash-pinned MIT-licensed DLSS5 Bridge. It deliberately does **not** hide third-party binaries inside encoded blobs.
++
++Before FiveM is modified, the installer prepares every external dependency in a temporary staging directory:
++
++- ReShade **6.8.0** is downloaded from `reshade.me` and checked against a pinned SHA-256. The full-add-on build is used only for Neural mode; Visual mode uses the standard build.
++- Shader packages are resolved from ReShade's public `EffectPackages.ini` catalog. Preset entries that are proprietary or absent from that catalog (for example QuantV files) are never fetched from unofficial mirrors. User-provided shader files are never deleted; techniques whose required file is unavailable in the prepared install are disabled in the installed preset.
++- Neural mode downloads the pinned RenoDX DLSS5 v4.70 provider and pinned DLSS NR/SR runtime archives, verifies the package hashes, and verifies the exact RenoDX and DLSS-NR binaries used by the live-control contract.
++
++Only after all of that succeeds does the journalled APPLY phase touch `FiveM.app\plugins`. A network or checksum failure therefore leaves the game installation unchanged.
++
++The compatibility bridge is installed but starts disabled. The runtime planner removes or adds its `DisabledAddons` entry for the **next** launch depending on whether Optical Flow / Hybrid motion is actually required. RenoDX and the input provider are controlled independently by the same policy.
++
++> Servers are allowed to forbid client plugins, and some do. This does not
++> bypass that, and no setting in it will.
++
++### Reading the status
++
++| Badge | What it means |
++|---|---|
++| `OFF` | you switched it off — strength is at zero |
++| `LOCKED` | it could work, but something it needs is not proven yet |
++| `READY` | everything is proven, nothing has been asked of it |
++| `ARMED` | configured, waiting for frames |
++| `ACTIVE` | frames are going through it **right now** |
++| `PAUSED` | running, deliberately suspended for a moment |
++| `BLOCKED` | a known failure, with the reason next to it |
++
++`ACTIVE` is earned, not assumed. A file being present, or a module being loaded,
++never produces it — and a claim that stops being re-proven drops back on its own
++within two seconds. If the Status page says `ARMED`, nothing is flowing, however
++good the frame counter looks.
++
++A `~` next to `ACTIVE` means the claim came from a component we do not own and
++could not be independently confirmed.
++
++### What works, and what does not
++
++The image pass runs. Motion for it is reconstructed from depth and the camera —
++exact for the world, approximate for traffic — with estimated motion filling in
++only where reprojection cannot see.
++
++Frame generation is locked, and this build will not unlock it.
++
++Generated frames need motion data derived from the game's geometry. GTA V does
++not produce any, so it has to be injected into the game's own shaders — that work
++is not done. Estimated motion from an optical-flow engine is **not** accepted as
++a substitute: it is what produces ghosting on fences and foliage, smeared
++vehicles and warped text.
++
++What does work today is the base-frame limiter, which is the part of frame
++generation that can be built and verified before the rest of it exists.
++
++---
++
++## For developers
++
++```
++src/core/     the entire decision layer — portable C++20, no Windows, no ReShade
++src/core/motion/  camera discovery, reprojection, motion validation — all tested
++shaders/      the compute passes, transcribed from src/core/ and checked against it
++src/app/      the orchestration loop and its two ports
++src/platform/ Windows facts, shared telemetry, configuration storage
++src/probe/    observers that deposit evidence
++src/effect/   actors that make a plan true
++src/ui/       ImGui, and nothing else
++src/fg/       the native input provider add-on
++tests/        298 assertions over the whole decision layer, runnable anywhere
++```
++
++### Building and testing the decision layer
++
++Needs nothing but a C++20 compiler. No GPU, no Windows, no SDK.
++
++```sh
++cmake -S . -B build && cmake --build build && ./build/emko_tests
++```
++
++```
++298 checks run, 0 failure(s)
++```
++
++That includes the parts most likely to be silently wrong: matrix inversion, the
++camera detector run against a synthetic drive with decoy matrices, and motion
++vectors checked against independently projected world points.
++
++Worth running before anything else: the rules of the product live in `core/`, and
++if they are wrong the Windows layer cannot save them.
++
++### Building the add-ons
++
++```powershell
++tools\build.ps1
++```
++
++Clones RenoDX, drops the sources in as two add-on targets, builds with MSVC, runs
++the core tests, verifies the export markers in the compiled binaries and stages a
++release with a manifest.
++
++### The one rule
++
++`core/` decides. `probe/` observes. `effect/` acts. `ui/` displays. Anything that
++looks like a decision outside `core/` is a bug — that separation is what makes
++the rules testable, and testable is what makes the status honest.
++
++See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design and a frank
++list of what is verified and what is not, and [`docs/BUDGET.md`](docs/BUDGET.md)
++for what this costs in performance, latency and stability — including the
++latency that frame generation adds by construction and cannot give back.
++
++---
++
++## Built on
++
++- [ReShade](https://reshade.me/) add-on API — Patrick Mours / crosire, BSD-3-Clause
++- [RenoDX](https://github.com/clshortfuse/renodx) — Carlos Lopez Jr. and contributors, MIT
++- DLSS 5 Bridge — NIGos and contributors, MIT
++- NVIDIA DLSS and Streamline — NVIDIA, under NVIDIA's own terms
++
++The SECRET EMKO name covers this control layer only and implies no authorship of
++any of the above. See `THIRD_PARTY_NOTICES.md`.
++
++No PureDark code, binaries, authentication or paid assets are used.
++
++MIT licensed.
+diff --git a/v3/SECRET-EMKO.bat b/v3/SECRET-EMKO.bat
+new file mode 100644
+index 0000000..0445af9
+--- /dev/null
++++ b/v3/SECRET-EMKO.bat
+@@ -0,0 +1,8 @@
++@echo off
++title SECRET EMKO Neural Graphics
++powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\Install-SecretEMKO.ps1" %*
++set ERR=%ERRORLEVEL%
++echo.
++if not "%ERR%"=="0" echo Exit code: %ERR%
++pause
++exit /b %ERR%
+diff --git a/v3/THIRD_PARTY_NOTICES.md b/v3/THIRD_PARTY_NOTICES.md
+new file mode 100644
+index 0000000..bcb253f
+--- /dev/null
++++ b/v3/THIRD_PARTY_NOTICES.md
+@@ -0,0 +1,42 @@
++# THIRD-PARTY NOTICES — SECRET EMKO Neural Graphics v3
++
++SECRET EMKO Neural Graphics is the product/integration branding for this project. It does not imply authorship of third-party components.
++
++## RenoDX
++Public framework source: clshortfuse/renodx  
++Copyright (c) 2025 Carlos Lopez Jr. and contributors  
++License: MIT.
++
++v3.16.0 pins RenoDX commit `9b212edad4dde9bca2b823b1e045b712b1a8d854` for reproducible Windows builds and records that commit again in `BUILD-MANIFEST.json`. RenoDX's original notices remain applicable.
++
++## ReShade
++ReShade and its add-on API are Copyright (C) Patrick Mours / crosire and contributors.  
++License: BSD 3-Clause for the source/API components used by the build.
++
++The ReShade binary and ReShade shader packages are **not redistributed** by SECRET EMKO. The v3.16.0 installer downloads ReShade 6.8.0 from reshade.me, verifies the pinned setup SHA-256, then resolves public shader packages from ReShade's official EffectPackages.ini catalog. Visual mode uses the standard build; Neural mode uses the Full Add-on build.
++
++## DLSS 5 Bridge
++NIGos/dlss5-bridge  
++Copyright (c) 2026 NIGos and contributors  
++License: MIT.
++
++RC5 pins the official upstream prerelease `v1.4.13-pre8` (commit `ecd1b00674020a1e8c76a9cb653a1a21d11676a0`, asset SHA-256 `C4C8B5BC4B26B2B3F3BF2767CDB708546D62F7D0BBB63D24E940C736DA9EFE26`). This build is used specifically for its internal NVIDIA Optical Flow synthetic-input path and its MinHook/lifecycle fixes. It remains an upstream prerelease rather than being represented as a stable release.
++
++The pinned bridge binary is obtained from its official GitHub prerelease during the release build, SHA-256 verified, and may be included with this package under its MIT license.
++
++## RenoDX DLSS 5 neural consumer
++The separately distributed `renodx-dlss5.addon64` is not source code from the public RenoDX main repository. SECRET EMKO does not claim ownership of it and does not store it in Git. The installer fetches the pinned v4.70 public compatibility package at install time, verifies the archive SHA-256 and then requires the exact known add-on binary SHA-256 before it can be copied into FiveM.
++
++## NVIDIA
++DLSS, DLSS Neural Rendering, DLSS Frame Generation, NGX and Streamline are NVIDIA technologies. Their proprietary runtime binaries are not relicensed as SECRET EMKO code and are not committed to this repository. Neural mode obtains the pinned NR/SR runtime archives at install time from the same public compatibility distribution used by the prior v2 stack, verifies package hashes (and the exact NR DLL hash), and copies them only after verification. This compatibility distribution is not represented as an NVIDIA-operated download service.
++
++## No PureDark code
++SECRET EMKO v3 contains no PureDark proprietary source, authentication bypass, Patreon bypass, license bypass or paid-mod assets.
++
++
++## DLSS5-Swapper live-control adapter provenance
++The RC5 RenoDX live-control adapter is derived from the MIT-licensed, hash-pinned RenoDX v4.7 UI bridge in `rakanki911/DLSS5-Swapper` (commit `24bd2aca7a7451ce94e564366381e33cac9dcdba`).  
++Copyright (c) 2026 Rakan Alkhaldi  
++License: MIT.
++
++SECRET EMKO uses that technique only for the exact verified `renodx-dlss5.addon64` v4.70 binary (SHA-256 `D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C8593952`) and additionally checks code fingerprints before enabling live control. Unknown or changed RenoDX builds are refused rather than patched heuristically. The adapter calls RenoDX's own settings callback synchronously and confirms supported values by readback; it does not retain private setting pointers or patch the RenoDX file on disk.
+diff --git a/v3/UNINSTALL.bat b/v3/UNINSTALL.bat
+new file mode 100644
+index 0000000..dfa736d
+--- /dev/null
++++ b/v3/UNINSTALL.bat
+@@ -0,0 +1,7 @@
++@echo off
++title SECRET EMKO Neural Graphics - uninstall
++powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\Uninstall-SecretEMKO.ps1" %*
++set ERR=%ERRORLEVEL%
++echo.
++pause
++exit /b %ERR%
+diff --git a/v3/config/ReShade.SecretEMKO.ini b/v3/config/ReShade.SecretEMKO.ini
+new file mode 100644
+index 0000000..cb7f908
+--- /dev/null
++++ b/v3/config/ReShade.SecretEMKO.ini
+@@ -0,0 +1,45 @@
++[ADDON]
++AddonPath=.
++DisabledAddons=
++
++[APP]
++Force10BitFormat=0
++ForceDefaultRefreshRate=0
++ForceFullscreen=0
++ForceResolution=0,0
++ForceVsync=0
++ForceWindowed=0
++
++[GENERAL]
++EffectSearchPaths=.\reshade-shaders\Shaders\**
++IntermediateCachePath=.\reshade-cache
++NoDebugInfo=1
++NoEffectCache=0
++PerformanceMode=0
++PresetPath=.\Secret_Emko_Main.ini
++SkipLoadingDisabledEffects=1
++TextureSearchPaths=.\reshade-shaders\Textures\**
++
++[INPUT]
++ForceShortcutModifiers=1
++GamepadNavigation=1
++InputProcessing=2
++KeyOverlay=36,0,0,0
++KeyScreenshot=44,0,0,0
++
++[OVERLAY]
++AutoSavePreset=1
++ShowPresetName=1
++ShowScreenshotMessage=1
++TutorialProgress=4
++
++[SCREENSHOT]
++ClearAlpha=1
++FileFormat=1
++FileNaming=%AppName%_%PresetName%_%Date%_%Time%_%TimeMS%
++JPEGQuality=90
++SavePath=.\Screenshots
++
++[STYLE]
++FontScale=1.000000
++HdrOverlayBrightness=203.000000
+diff --git a/v3/docs/ARCHITECTURE.md b/v3/docs/ARCHITECTURE.md
+new file mode 100644
+index 0000000..0115ff8
+--- /dev/null
++++ b/v3/docs/ARCHITECTURE.md
+@@ -0,0 +1,410 @@
++# SECRET EMKO Neural Graphics v3 — Architecture
++
++## The goal, stated once
++
++A player should have to understand three things:
++
++```
++How should the picture look?      Natural / Cinematic / Detail
++How strong?                       0.00 — 2.00
