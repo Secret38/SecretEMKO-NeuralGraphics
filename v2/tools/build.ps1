@@ -68,6 +68,19 @@ New-Item -ItemType Directory -Path (Join-Path $stage "presets") -Force | Out-Nul
 
 Copy-Item $built.FullName (Join-Path $stage "SecretEMKO.addon64") -Force
 
+# Verify the ReShade AddonInit/AddOnUninit lifecycle markers are present in the
+# compiled PE before packaging. __declspec(dllexport) causes these names to be
+# emitted into the export directory; this catches accidental regression back to
+# DllMain-only initialization without depending on Visual Studio PATH state.
+$addonPath = Join-Path $stage "SecretEMKO.addon64"
+$addonAscii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($addonPath))
+foreach ($symbol in @("AddonInit","AddonUninit","NAME","DESCRIPTION")) {
+    if (-not $addonAscii.Contains($symbol)) {
+        throw "Compiled SECRET EMKO add-on is missing lifecycle/export marker: $symbol"
+    }
+}
+Write-Host "SECRET EMKO AddonInit lifecycle markers verified"
+
 $bridge = Join-Path $WorkDir "dlss5-bridge.addon64"
 Invoke-WebRequest -UseBasicParsing -Uri $BridgeUrl -OutFile $bridge
 $actualBridge = (Get-FileHash -LiteralPath $bridge -Algorithm SHA256).Hash
