@@ -1,0 +1,356 @@
++  // Every one of these is a capability that is unreachable today for the same
++  // single reason: the feature is created and owned by somebody else, so its
++  // inputs are not ours to supply. Owning the feature is what changes, and
++  // everything below follows from that one change rather than from eleven
++  // separate pieces of cleverness.
++  BackendCapabilities caps;
++  caps.second_instance = true;          // we create the handles, so we create two
++  caps.per_pixel_control_mask = true;   // we bind the inputs, so we bind a mask
++  caps.separate_structure_tone = true;
++  caps.jitter_control = true;           // we set the projection offset
++  caps.disable_game_taa = true;
++  caps.render_scale_below_one = true;
++  caps.frame_generation = true;         // via the D3D11/D3D12 interop of Stage 4
++  caps.reflex = true;                   // not optional alongside generation
++  caps.live_parameter_change = true;
++  caps.reports_own_cost = true;
++  caps.reports_memory = true;
++  return caps;
++}
++
++}  // namespace emko::core
+diff --git a/v3/src/core/backend.hpp b/v3/src/core/backend.hpp
+new file mode 100644
+index 0000000..1fcc3aa
+--- /dev/null
++++ b/v3/src/core/backend.hpp
+@@ -0,0 +1,182 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/backend.hpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ *
++ * Who actually runs the model.
++ *
++ * Up to here this product has been a control layer: RenoDX runs the neural
++ * pass, and everything in core/ works out what RenoDX is and is not doing. That
++ * shape is why so much of this codebase is fail-closed. We cannot ask a binary
++ * we did not write what it supports, so we prove it by observation, and
++ * anything unproven stays switched off. It is the right answer to that
++ * situation, and it is also the reason the second pass and the per-pixel
++ * control mask are both sitting there inert: nothing is wrong with them, we
++ * simply cannot get at the provider's inputs.
++ *
++ * This file is where that assumption is turned into a variable.
++ *
++ * A backend is whatever evaluates the model. RenoDX is one. Our own NGX path is
++ * another. The rest of the product asks the *backend* what it can do instead of
++ * assuming there is only one and guessing about it. Nothing above this file
++ * needs to know which one it got.
++ *
++ * THE ASYMMETRY THAT MATTERS
++ *
++ * A capability of a backend we wrote can be *declared*: we know it is there,
++ * because it is our code. A capability of a backend someone else wrote has to
++ * be *observed*, every session, because their next release can remove it and
++ * will not tell us.
++ *
++ * Collapsing those two into one "supports" flag is the mistake that would undo
++ * the whole evidence model, so they are different functions here and the
++ * distinction is asserted in the tests. A third-party backend that claims
++ * something is making a claim. Our own backend stating something is a fact
++ * about code in this repository.
++ *
++ * WHAT THIS DOES NOT DO
++ *
++ * It does not make a native backend exist. Writing one is Stages 4 to 6 of the
++ * roadmap - the D3D11/D3D12 interop, the jitter and the game's own TAA - and
++ * that is real work rather than a repackaging. What this does is stop the rest
++ * of the system from being written around the assumption that there will only
++ * ever be one provider and that we will never own it. Every part of the product
++ * that is currently blocked is blocked on a provider input, and this is the
++ * interface through which a provider that has those inputs would arrive.
++ */
++
++#ifndef SECRETEMKO_CORE_BACKEND_HPP
++#define SECRETEMKO_CORE_BACKEND_HPP
++
++#include <cstdint>
++#include <string>
++#include <vector>
++
++namespace emko::core {
++
++enum class BackendKind : std::uint8_t {
++  None = 0,
++
++  // Today. A third-party add-on that owns the DLSS feature, which we drive
++  // through its settings interface and observe through its behaviour.
++  RenoDx = 1,
++
++  // Ours. Creates and owns the feature itself, so its inputs are inputs we
++  // control rather than inputs we hope someone forwards.
++  Native = 2,
++};
++
++const char* ToString(BackendKind kind);
++
++// Whether a backend of this kind is entitled to *state* what it supports, or
++// has to *prove* it. Our own code may state; anyone else's must prove, every
++// session, because their next release can change it without telling us.
++bool MayDeclare(BackendKind kind);
++
++// Everything the rest of the product changes behaviour on. Not a wish list:
++// each entry has a use site, and a capability nobody consumes does not belong
++// here.
++struct BackendCapabilities {
++  // Two feature handles with independent temporal histories. Without it a
++  // second pass shares one history and feeds it its own output.
++  bool second_instance = false;
++
++  // A mask texture reaches the evaluation, so strength can vary per pixel
++  // inside the model rather than being composited afterwards.
++  bool per_pixel_control_mask = false;
++
++  // Fine detail and broad response are separately addressable at the provider.
++  // Without it they can still be separated afterwards, by frequency - see
++  // core/semantic.hpp - which is cheaper but approximate.
++  bool separate_structure_tone = false;
++
++  // We drive the projection jitter. Required for genuine reconstruction, and
++  // required for the antialiasing benefit at render scale 1.0.
++  bool jitter_control = false;
++
++  // The game's own temporal antialiasing can be turned off. Leaving it on in
++  // front of a reconstruction pass is the single most common way these setups
++  // end up softer than native.
++  bool disable_game_taa = false;
++
++  // Render scale below 1.0, i.e. actual upscaling rather than DLAA.
++  bool render_scale_below_one = false;
++
++  bool frame_generation = false;
++
++  // Latency reduction. Not optional alongside generation: without it the held
++  // frame lands on top of an already-queued present and the input lag roughly
++  // doubles.
++  bool reflex = false;
++
++  // Settings take effect without restarting the game.
++  bool live_parameter_change = false;
++
++  // Timestamp queries we can actually read, which is what the budget governor
++  // needs to do anything other than guess.
++  bool reports_own_cost = false;
++
++  // The feature's video memory footprint, from the runtime rather than from an
++  // estimate.
++  bool reports_memory = false;
++
++  [[nodiscard]] std::size_t count() const;
++};
++
++struct BackendDescription {
++  BackendKind kind = BackendKind::None;
++  std::string name;          // what to show the player
++  std::string provenance;    // where it came from, in one line
++  BackendCapabilities caps;
++
++  // For an observed backend: has it actually been observed this session, or is
++  // this only what we expect it to be? Always true for a declared backend.
++  bool proven = false;
++
++  [[nodiscard]] bool usable() const { return kind != BackendKind::None && proven; }
++};
++
++// What the player's settings need from a backend. Derived from Intent rather
++// than set by hand, so a new setting cannot quietly forget to require the thing
++// that makes it work.
++struct BackendNeeds {
++  bool second_instance = false;
++  bool per_pixel_control_mask = false;
++  bool jitter_control = false;
++  bool render_scale_below_one = false;
++  bool frame_generation = false;
++
++  [[nodiscard]] std::size_t count() const;
++};
++
++// What the chosen backend cannot give. Each entry is a sentence for the
++// interface, because a setting that silently does nothing is the failure this
++// whole product exists to avoid.
++struct BackendShortfall {
++  std::vector<std::string> missing;
++
++  [[nodiscard]] bool complete() const { return missing.empty(); }
++  [[nodiscard]] std::string summary() const;
++};
++
++BackendShortfall Compare(const BackendCapabilities& have, const BackendNeeds& need);
++
++// Picks the backend that satisfies the most of what is needed. Ties go to the
++// one with fewer layers between us and the model, which is ours - not out of
++// preference, but because every layer is a place where an input can fail to be
++// forwarded and we have to go back to proving things by observation.
++//
++// An unproven backend is never chosen, whatever it claims.
++BackendDescription Choose(const std::vector<BackendDescription>& available,
++                          const BackendNeeds& need);
++
++// The capabilities a native backend would have once Stages 4 to 6 are built.
++// Kept here, in code, rather than in a document: it is the specification the
++// native path has to meet, and a test asserts it is strictly better than what
++// the third-party path can currently be observed to do - otherwise there would
++// be no reason to write it.
++BackendCapabilities NativeTarget();
++
++}  // namespace emko::core
++
++#endif  // SECRETEMKO_CORE_BACKEND_HPP
+diff --git a/v3/src/core/budget.cpp b/v3/src/core/budget.cpp
+new file mode 100644
+index 0000000..b88852d
+--- /dev/null
++++ b/v3/src/core/budget.cpp
+@@ -0,0 +1,228 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/budget.cpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "core/budget.hpp"
++
++#include <algorithm>
++#include <cmath>
++
++namespace emko::core {
++
++const char* ToString(MotionQuality quality) {
++  switch (quality) {
++    case MotionQuality::Full: return "full";
++    case MotionQuality::Half: return "half";
++    case MotionQuality::Quarter: return "quarter";
++  }
++  return "full";
++}
++
++int Divisor(MotionQuality quality) {
++  switch (quality) {
++    case MotionQuality::Full: return 1;
++    case MotionQuality::Half: return 2;
++    case MotionQuality::Quarter: return 4;
++  }
++  return 1;
++}
++
++const char* ToString(SecondPassAllowance allowance) {
++  switch (allowance) {
++    case SecondPassAllowance::Full: return "full";
++    case SecondPassAllowance::Half: return "half";
++    case SecondPassAllowance::None: return "none";
++  }
++  return "full";
++}
++
++const char* ToString(BudgetAction action) {
++  switch (action) {
++    case BudgetAction::Hold: return "hold";
++    case BudgetAction::Degrade: return "degrade";
++    case BudgetAction::ShrinkSecondPass: return "shrink second pass";
++    case BudgetAction::DropSecondPass: return "drop second pass";
++    case BudgetAction::Recover: return "recover";
++    case BudgetAction::DropMultiplier: return "drop multiplier";
++    case BudgetAction::StopGenerating: return "stop generating";
++  }
++  return "hold";
++}
++
++std::string LatencyEstimate::summary() const {
++  if (!meaningful) return "No added input lag.";
++
++  // Rounded to whole milliseconds: the estimate is not precise enough to
++  // justify a decimal, and a decimal would imply it is.
++  const int rounded = static_cast<int>(total_added_ms + 0.5f);
++  return "Costs about " + std::to_string(rounded) +
++         " ms of extra input lag, because a rendered frame has to be held back "
++         "before the extra ones can be shown.";
++}
++
++LatencyEstimate EstimateLatency(int base_fps, int multiplier, float generator_ms) {
++  LatencyEstimate estimate;
++  if (base_fps <= 0) return estimate;
++
++  estimate.base_frame_ms = 1000.0f / static_cast<float>(base_fps);
++
++  if (multiplier <= 1) {
++    // Nothing is held back, so nothing is added. The base-rate limiter is not
++    // counted here: capping the render rate does not by itself add latency, and
++    // by keeping the present queue short it often removes some.
++    estimate.meaningful = false;
++    return estimate;
++  }
++
++  // The inherent cost, and the reason it cannot be engineered away: showing an
++  // interpolated frame between N and N+1 requires N+1 to exist first, so the
++  // entire output sequence is delayed by one rendered frame.
++  //
++  // Note this is one *base* frame, and 3x renders at a lower base rate than 2x
++  // does - so a higher multiplier is worse for latency, not better.
++  estimate.held_frame_ms = estimate.base_frame_ms;
++  estimate.generator_ms = std::max(0.0f, generator_ms);
++  estimate.total_added_ms = estimate.held_frame_ms + estimate.generator_ms;
++  estimate.meaningful = true;
++  return estimate;
++}
++
++void BudgetGovernor::reset() {
++  quality_ = MotionQuality::Full;
++  max_multiplier_ = 3;
++  second_pass_ = SecondPassAllowance::Full;
++  over_budget_frames_ = 0;
++  under_budget_frames_ = 0;
++}
++
++BudgetVerdict BudgetGovernor::observe(const FrameCost& cost, float frame_budget_ms,
++                                      int multiplier) {
++  BudgetVerdict verdict;
++  verdict.quality = quality_;
++  verdict.max_multiplier = max_multiplier_;
++  verdict.second_pass = second_pass_;
++
++  if (!cost.measured() || !(frame_budget_ms > 0.0f)) {
++    // Nothing measured means nothing to judge. Guessing here would be worse
++    // than waiting one more frame for a timestamp query to come back.
++    verdict.reason = "no timings yet";
++    return verdict;
++  }
++
++  const float allowance =
++      std::min(frame_budget_ms * policy_.max_overhead_fraction, policy_.max_overhead_ms);
++  const float ours = cost.ours_ms();
++
++  if (ours > allowance) {
++    ++over_budget_frames_;
++    under_budget_frames_ = 0;
++  } else {
++    ++under_budget_frames_;
++    over_budget_frames_ = 0;
++  }
++
++  if (over_budget_frames_ >= policy_.frames_before_degrade) {
++    over_budget_frames_ = 0;
++
++    // The order matters. Give up mask resolution first: a coarser confidence
++    // field costs a little accuracy at the edges of moving objects. Giving up
++    // a multiplier costs frames. Both are better than missing the frame budget,
++    // which costs smoothness - the thing all of this was for.
++    if (quality_ != MotionQuality::Quarter) {
++      quality_ = static_cast<MotionQuality>(static_cast<std::uint8_t>(quality_) + 1);
++      verdict.action = BudgetAction::Degrade;
++      verdict.quality = quality_;
++      verdict.reason = std::string("motion detail reduced to ") + ToString(quality_) +
++                       " to stay inside the frame budget";
++      return verdict;
++    }
++
