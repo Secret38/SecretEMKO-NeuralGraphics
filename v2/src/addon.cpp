@@ -844,6 +844,8 @@ void ApplyCompatibilityMotionPath() {
   PersistFrameGenerationSettings();
 }
 
+bool ApplyNativeFrameGenPath(int policy);
+
 void EnsureTemporalPolicy() {
   if (g_temporal_policy_synced) return;
 
