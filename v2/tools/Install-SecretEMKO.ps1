@@ -42,7 +42,7 @@ $RenoDXAddonHash = "D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C859
 function Banner {
     Write-Host ""
     Write-Host "================================================================" -ForegroundColor DarkGray
-    Write-Host " SECRET EMKO  //  NEURAL GRAPHICS v2 RC5.1.1" -ForegroundColor Cyan
+    Write-Host " SECRET EMKO  //  NEURAL GRAPHICS v2 RC5.1" -ForegroundColor Cyan
     Write-Host " Universal FiveM Legacy installer  |  isolated + reversible" -ForegroundColor Gray
     Write-Host "================================================================" -ForegroundColor DarkGray
     Write-Host ""
@@ -196,7 +196,7 @@ function Resolve-FiveMAppPath {
 
     $enhancedConfig = Join-Path $env:APPDATA "FiveM for GTAV Enhanced\config.toml"
     if (Test-Path -LiteralPath $enhancedConfig) {
-        throw "Only FiveM for GTAV Enhanced was detected. SECRET EMKO v2 RC5.1.1 currently targets FiveM GTA V Legacy and will not install into Enhanced."
+        throw "Only FiveM for GTAV Enhanced was detected. SECRET EMKO v2 RC5.1 currently targets FiveM GTA V Legacy and will not install into Enhanced."
     }
 
     throw "FiveM Legacy was not found. Start FiveM Legacy once, or run the installer with -FiveMPath <path-to-FiveM.exe>."
