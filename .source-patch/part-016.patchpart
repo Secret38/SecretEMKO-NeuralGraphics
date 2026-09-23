@@ -1,0 +1,350 @@
++    // The second evaluation goes after mask detail and before any frames, and
++    // it is shrunk before it is removed.
++    //
++    // Shrinking first is not a formality. At half resolution the second pass
++    // keeps the widened footprint - the reason anyone asked for it - and gives
++    // up only fine detail it should not have been touching anyway, for about a
++    // third of the cost. Removing it gives up the look entirely. Those are not
++    // the same size of loss, so they are not the same rung.
++    if (second_pass_ == SecondPassAllowance::Full) {
++      second_pass_ = SecondPassAllowance::Half;
++      verdict.action = BudgetAction::ShrinkSecondPass;
++      verdict.second_pass = second_pass_;
++      verdict.reason = "second pass moved to half resolution to stay inside the "
++                       "frame budget";
++      return verdict;
++    }
++
++    if (second_pass_ == SecondPassAllowance::Half) {
++      second_pass_ = SecondPassAllowance::None;
++      verdict.action = BudgetAction::DropSecondPass;
++      verdict.second_pass = second_pass_;
++      verdict.reason = "running the model once instead of twice to stay inside "
++                       "the frame budget";
++      return verdict;
++    }
++
++    if (multiplier > 2 && max_multiplier_ > 2) {
++      max_multiplier_ = 2;
++      verdict.action = BudgetAction::DropMultiplier;
++      verdict.max_multiplier = max_multiplier_;
++      verdict.reason = "3x costs more than it returns on this machine";
++      return verdict;
++    }
++
++    if (multiplier > 1) {
++      max_multiplier_ = 1;
++      verdict.action = BudgetAction::StopGenerating;
++      verdict.max_multiplier = max_multiplier_;
++      verdict.reason = "extra frames cannot be produced without missing frames";
++      return verdict;
++    }
++
++    verdict.reason = "over budget, but there is nothing left to give up";
++    return verdict;
++  }
++
++  if (under_budget_frames_ >= policy_.frames_before_recover) {
++    under_budget_frames_ = 0;
++
++    // Climb back the same way, slowly, and only while there is room to spare.
++    // Recovering the instant the budget is met guarantees oscillation.
++    if (ours < allowance * 0.6f) {
++      if (max_multiplier_ < 3) {
++        ++max_multiplier_;
++        verdict.action = BudgetAction::Recover;
++        verdict.max_multiplier = max_multiplier_;
++        verdict.reason = "there is room again, so the multiplier limit is raised";
++        return verdict;
++      }
++      if (second_pass_ != SecondPassAllowance::Full) {
++        second_pass_ = static_cast<SecondPassAllowance>(
++            static_cast<std::uint8_t>(second_pass_) - 1);
++        verdict.action = BudgetAction::Recover;
++        verdict.second_pass = second_pass_;
++        verdict.reason = second_pass_ == SecondPassAllowance::Full
++                             ? "there is room for the second pass at full "
++                               "resolution again"
++                             : "there is room for the second pass again, at "
++                               "half resolution";
++        return verdict;
++      }
++      if (quality_ != MotionQuality::Full) {
++        quality_ = static_cast<MotionQuality>(static_cast<std::uint8_t>(quality_) - 1);
++        verdict.action = BudgetAction::Recover;
++        verdict.quality = quality_;
++        verdict.reason =
++            std::string("motion detail raised to ") + ToString(quality_);
++        return verdict;
++      }
++    }
++  }
++
++  verdict.reason = "within budget";
++  return verdict;
++}
++
++}  // namespace emko::core
+diff --git a/v3/src/core/budget.hpp b/v3/src/core/budget.hpp
+new file mode 100644
+index 0000000..66ed5e8
+--- /dev/null
++++ b/v3/src/core/budget.hpp
+@@ -0,0 +1,166 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/budget.hpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ *
++ * What this costs, and what it costs the player.
++ *
++ * Three things get traded against each other and it is worth being explicit
++ * about which is which, because they are not the same and improving one
++ * routinely damages another:
++ *
++ *   Throughput  frames per second. The number everyone quotes.
++ *   Latency     how long after moving the mouse the screen reflects it. Frame
++ *               generation makes this *worse* by construction, and no amount
++ *               of extra frames compensates for it.
++ *   Quality     whether those frames are right.
++ *
++ * The latency cost is not an implementation detail that better engineering
++ * removes. To show an interpolated frame between N and N+1, N+1 has to already
++ * exist - so the whole output is delayed by one rendered frame. That is
++ * roughly 14 ms at 2x on a 144 Hz display and roughly 21 ms at 3x, because 3x
++ * renders at a lower base rate. It is inherent, it is the single most
++ * important thing a player should know before switching it on, and this file
++ * exists so the interface can state the number instead of hiding it.
++ *
++ * The second job here is to stop the pipeline from being the reason the game
++ * stutters. If our own passes do not fit in the budget, quality is reduced in
++ * a defined order rather than frames being missed. A dropped frame is far more
++ * visible than a slightly coarser confidence mask.
++ */
++
++#ifndef SECRETEMKO_CORE_BUDGET_HPP
++#define SECRETEMKO_CORE_BUDGET_HPP
++
++#include <cstdint>
++#include <string>
++
++namespace emko::core {
++
++// Where a frame's GPU time went, in milliseconds. Measured, never assumed:
++// every field is filled from a timestamp query or left at zero.
++struct FrameCost {
++  float game_ms = 0.0f;        // everything the game itself does
++  float motion_ms = 0.0f;      // reprojection
++  float validation_ms = 0.0f;  // motion validation
++  float neural_ms = 0.0f;      // the image pass
++  float generation_ms = 0.0f;  // the generator
++
++  [[nodiscard]] float ours_ms() const {
++    return motion_ms + validation_ms + neural_ms + generation_ms;
++  }
++  [[nodiscard]] float total_ms() const { return game_ms + ours_ms(); }
++  [[nodiscard]] bool measured() const { return total_ms() > 0.0f; }
++};
++
++// What the player feels, in milliseconds added to input latency.
++struct LatencyEstimate {
++  float base_frame_ms = 0.0f;   // one rendered frame at the current base rate
++  float held_frame_ms = 0.0f;   // the delay inherent to interpolating
++  float generator_ms = 0.0f;    // the generator's own GPU time
++  float total_added_ms = 0.0f;  // what switching extra frames on costs
++  bool meaningful = false;      // false when nothing is being generated
++
++  // One sentence for the interface, in plain language.
++  [[nodiscard]] std::string summary() const;
++};
++
++// How finely the motion and validation passes run. Dropping a tier costs a
++// coarser confidence mask, which is a far smaller quality loss than a missed
++// frame - which is why this is the first thing given up.
++enum class MotionQuality : std::uint8_t {
++  Full = 0,      // per-pixel
++  Half = 1,      // quarter the pixels
++  Quarter = 2,   // a sixteenth
++};
++
++const char* ToString(MotionQuality quality);
++int Divisor(MotionQuality quality);
++
++struct BudgetPolicy {
++  // Share of the frame our own passes may occupy before quality is reduced.
++  // Above this the pipeline is the reason the game is slower, which is never
++  // an acceptable trade for a better mask.
++  float max_overhead_fraction = 0.15f;
++
++  // And an absolute ceiling, for very low frame rates where a percentage is
++  // misleading.
++  float max_overhead_ms = 4.0f;
++
++  // Frames of agreement required before moving a tier, in each direction.
++  // Recovering is slower than degrading on purpose: reacting instantly to one
++  // good frame produces oscillation, which looks worse than either tier.
++  std::uint32_t frames_before_degrade = 20;
++  std::uint32_t frames_before_recover = 120;
++};
++
++// How much of a second evaluation the machine can currently afford. Three
++// states rather than two, because shrinking it is a far smaller loss than
++// removing it: at half resolution the second pass keeps the widened footprint
++// that is the whole reason anyone wants it, and costs about a third as much.
++enum class SecondPassAllowance : std::uint8_t {
++  Full = 0,
++  Half = 1,
++  None = 2,
++};
++
++const char* ToString(SecondPassAllowance allowance);
++
++enum class BudgetAction : std::uint8_t {
++  Hold = 0,
++  Degrade,           // drop a motion-quality tier
++  ShrinkSecondPass,  // run the second evaluation at half resolution
++  DropSecondPass,    // run the model once instead of twice
++  Recover,           // climb back up
++  DropMultiplier,    // 3x is costing more than it returns
++  StopGenerating,    // even 2x does not fit
++};
++
++const char* ToString(BudgetAction action);
++
++struct BudgetVerdict {
++  BudgetAction action = BudgetAction::Hold;
++  MotionQuality quality = MotionQuality::Full;
++  int max_multiplier = 3;
++  SecondPassAllowance second_pass = SecondPassAllowance::Full;
++  std::string reason;
++
++  [[nodiscard]] bool allow_second_pass() const {
++    return second_pass != SecondPassAllowance::None;
++  }
++};
++
++// Stateful because the decision is about a trend, not a frame. Kept out of the
++// planner, which stays pure; its output arrives there as an observation.
++class BudgetGovernor {
++ public:
++  explicit BudgetGovernor(BudgetPolicy policy = {}) : policy_(policy) {}
++
++  // Call once per frame with measured costs. `frame_budget_ms` is the time one
++  // displayed frame is allowed to take.
++  BudgetVerdict observe(const FrameCost& cost, float frame_budget_ms, int multiplier);
++
++  [[nodiscard]] MotionQuality quality() const { return quality_; }
++  [[nodiscard]] int max_multiplier() const { return max_multiplier_; }
++  [[nodiscard]] SecondPassAllowance second_pass() const { return second_pass_; }
++  [[nodiscard]] bool allow_second_pass() const {
++    return second_pass_ != SecondPassAllowance::None;
++  }
++  void reset();
++
++ private:
++  BudgetPolicy policy_;
++  MotionQuality quality_ = MotionQuality::Full;
++  int max_multiplier_ = 3;
++  SecondPassAllowance second_pass_ = SecondPassAllowance::Full;
++  std::uint32_t over_budget_frames_ = 0;
++  std::uint32_t under_budget_frames_ = 0;
++};
++
++// Pure. `base_fps` is the rate the game actually renders at, `multiplier` what
++// is being generated on top of it.
++LatencyEstimate EstimateLatency(int base_fps, int multiplier, float generator_ms);
++
++}  // namespace emko::core
++
++#endif  // SECRETEMKO_CORE_BUDGET_HPP
+diff --git a/v3/src/core/capability.cpp b/v3/src/core/capability.cpp
+new file mode 100644
+index 0000000..7e85483
+--- /dev/null
++++ b/v3/src/core/capability.cpp
+@@ -0,0 +1,359 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/capability.cpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "core/capability.hpp"
++
++#include <algorithm>
++
++namespace emko::core {
++namespace {
++
++// Blocked is not a rung on the liveness ladder, it is a sideways exit. Map it
++// to the bottom whenever we need to compare or clamp liveness numerically.
++constexpr int Rank(Lifecycle s) {
++  return s == Lifecycle::Blocked ? 0 : static_cast<int>(s);
++}
++
++constexpr Lifecycle FromRank(int rank) {
++  rank = std::clamp(rank, 0, static_cast<int>(Lifecycle::Active));
++  return static_cast<Lifecycle>(rank);
++}
++
++// What a single observation is able to prove on its own.
++constexpr Lifecycle ProvenBy(EvidenceKind kind) {
++  switch (kind) {
++    case EvidenceKind::FilePresent: return Lifecycle::Installed;
++    case EvidenceKind::ModuleLoaded: return Lifecycle::Loaded;
++    case EvidenceKind::ContractNegotiated: return Lifecycle::Ready;
++    case EvidenceKind::Configured: return Lifecycle::Armed;
++    case EvidenceKind::Liveness: return Lifecycle::Active;
++    case EvidenceKind::Blocker: return Lifecycle::Blocked;
++  }
++  return Lifecycle::Absent;
++}
++
++// Prerequisite: must be Ready before anything above it may climb further.
++Dependency Req(CapId id) {
++  return Dependency{id, DepKind::Required, 0, Lifecycle::Ready};
++}
++// A passive artifact: existing on disk is the whole of its contribution.
++Dependency File(CapId id) {
++  return Dependency{id, DepKind::Required, 0, Lifecycle::Installed};
++}
++// A live coupling: the dependent is only as alive as this dependency is.
++Dependency Live(CapId id) {
++  return Dependency{id, DepKind::Required, 0, Lifecycle::Active};
++}
++Dependency Opt(CapId id) {
++  return Dependency{id, DepKind::Optional, 0, Lifecycle::Ready};
++}
++Dependency Any(CapId id, std::uint8_t group) {
++  return Dependency{id, DepKind::AnyOf, group, Lifecycle::Ready};
++}
++
++const std::array<CapabilityDef, kCapCount>& BuildDefs() {
++  static const std::array<CapabilityDef, kCapCount> defs = {{
++      {CapId::ReShadeHost, "host.reshade", "ReShade host",
++       "Loader and add-on API that everything else attaches to.", true, {}},
++
++      {CapId::EmkoControl, "host.emko", "SECRET EMKO control",
++       "This control surface.", true, {Req(CapId::ReShadeHost)}},
++
++      {CapId::RenoDxProvider, "provider.renodx", "Neural provider",
++       "Consumes the neural model and applies it to the frame.", true,
++       {Req(CapId::ReShadeHost)}},
++
++      {CapId::RenoDxLiveControl, "provider.renodx.live", "Live provider control",
++       "Verified callback that applies style and strength without a restart.",
++       true, {Req(CapId::RenoDxProvider)}},
++
++      {CapId::ProviderMultiPass, "provider.multipass", "Two-pass capability",
++       "Two model evaluations with separate histories, so neither has to be "
++       "pushed hard.",
++       true, {Req(CapId::RenoDxProvider)}},
++
++      {CapId::DlssSrRuntime, "runtime.dlss.sr", "Super-resolution runtime",
++       "NVIDIA runtime the synthetic contract resolves against.", true, {}},
++
++      {CapId::DlssNrRuntime, "runtime.dlss.nr", "Neural rendering runtime",
++       "NVIDIA neural model runtime.", true, {}},
++
++      {CapId::Bridge, "bridge.dlss5", "Compatibility bridge",
++       "Synthesises the DLSS contract the game does not expose.", true,
