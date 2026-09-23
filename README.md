@@ -3,7 +3,7 @@
 **Modern visual and neural-rendering control system for FiveM GTA V Legacy x64.**  
 Created and maintained by **Secret EMKO** · GitHub owner: **@Secret38**
 
-Current release candidate: **v2.0.0-rc5**
+Current release candidate: **v2.0.0-rc5.1**
 
 > One product. One installer. One control surface.  
 > ReShade, RenoDX, DLSS 5 Bridge and NVIDIA runtimes are treated as backend technologies where required — the user-facing product is **SECRET EMKO Neural Graphics**.
@@ -55,7 +55,7 @@ The source archive intentionally does not contain the compiled native add-ons.
 Download the latest successful GitHub Actions artifact named:
 
 ```text
-SecretEMKO-NeuralGraphics-v2.0.0-rc5
+SecretEMKO-NeuralGraphics-v2.0.0-rc5.1
 ```
 
 Then:
@@ -213,3 +213,7 @@ Third-party components remain under their respective licenses and notices.
 The normal Full Neural UI is reduced to four tabs: **Graphics**, **Frame Gen**, **Advanced**, and **Status**. Graphics exposes three looks — **Natural**, **Cinematic**, and **Detail** — plus one live **Strength** slider from 0.00 to 2.00. Raw provider and bridge settings remain available only under Advanced.
 
 Frame Generation has a simple product contract: **Off / 2x / 3x**, automatic or manual base FPS, automatic HUD protection, and automatic pause during menus/loading/display changes. The switch remains fail-closed until a real `SecretEMKO-FG.addon64` native GTA V Legacy input provider exists; Streamline/DLSSG DLL presence alone is not reported as working Frame Generation. See `v2/FRAMEGEN-NATIVE.md`.
+
+## RC5.1 installer reliability hotfix
+
+Built Full Neural packages now carry the required ReShade shader payload and `swapchain_override.addon64` inside the release artifact. The normal Full Neural install uses that bundled payload and does not contact GitHub for ReShade content. The online updater remains only as a fallback and now retries transient HTTP/TLS failures with exponential backoff plus a `curl.exe` fallback.
