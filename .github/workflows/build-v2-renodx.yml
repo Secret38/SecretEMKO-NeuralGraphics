@@ -126,15 +126,49 @@ jobs:
           }
 
           $bytes = [IO.File]::ReadAllBytes($consumer.FullName)
-          function Assert-Bytes([int]$Offset, [byte[]]$Expected, [string]$Name) {
+
+          function Get-U16([int]$Offset) {
+            return [BitConverter]::ToUInt16($bytes, $Offset)
+          }
+          function Get-U32([int]$Offset) {
+            return [BitConverter]::ToUInt32($bytes, $Offset)
+          }
+          function Convert-RvaToRaw([uint32]$Rva) {
+            $pe = [int](Get-U32 0x3C)
+            if ([Text.Encoding]::ASCII.GetString($bytes, $pe, 4) -ne ("PE" + [char]0 + [char]0)) {
+              throw "Pinned RenoDX consumer is not a valid PE image"
+            }
+
+            $sectionCount = [int](Get-U16 ($pe + 6))
+            $optionalSize = [int](Get-U16 ($pe + 20))
+            $sectionTable = $pe + 24 + $optionalSize
+
+            for ($s = 0; $s -lt $sectionCount; $s++) {
+              $entry = $sectionTable + ($s * 40)
+              $virtualSize = [uint32](Get-U32 ($entry + 8))
+              $virtualAddress = [uint32](Get-U32 ($entry + 12))
+              $rawSize = [uint32](Get-U32 ($entry + 16))
+              $rawPointer = [uint32](Get-U32 ($entry + 20))
+              $span = [Math]::Max([uint64]$virtualSize, [uint64]$rawSize)
+              if ([uint64]$Rva -ge [uint64]$virtualAddress -and
+                  [uint64]$Rva -lt ([uint64]$virtualAddress + $span)) {
+                return [int]([uint64]$rawPointer + ([uint64]$Rva - [uint64]$virtualAddress))
+              }
+            }
+            throw ("RVA 0x{0:X} is not backed by a PE section" -f $Rva)
+          }
+
+          function Assert-RvaBytes([uint32]$Rva, [byte[]]$Expected, [string]$Name) {
+            $raw = Convert-RvaToRaw $Rva
             for ($i = 0; $i -lt $Expected.Length; $i++) {
-              if ($bytes[$Offset + $i] -ne $Expected[$i]) {
-                throw "$Name fingerprint mismatch at 0x$('{0:X}' -f ($Offset + $i))"
+              if ($bytes[$raw + $i] -ne $Expected[$i]) {
+                throw ("$Name fingerprint mismatch at RVA 0x{0:X}" -f ($Rva + $i))
               }
             }
           }
-          Assert-Bytes 0x23ff8 ([byte[]](0xB9,0x32,0x4B,0x00,0x00,0x00,0xFF,0xD0,0x48,0x89,0x05,0x9A,0x2C,0x17,0x00)) "RenoDX init"
-          Assert-Bytes 0x2607c ([byte[]](0x48,0x8D,0x15,0x7D,0x45,0x00,0x00,0xFF,0xD0)) "RenoDX settings callback"
+
+          Assert-RvaBytes 0x23ff8 ([byte[]](0xB9,0x32,0x4B,0x00,0x00,0x00,0xFF,0xD0,0x48,0x89,0x05,0x9A,0x2C,0x17,0x00)) "RenoDX init"
+          Assert-RvaBytes 0x2607c ([byte[]](0x48,0x8D,0x15,0x7D,0x45,0x00,0x00,0xFF,0xD0)) "RenoDX settings callback"
 
           $ascii = [Text.Encoding]::ASCII.GetString($bytes)
           foreach ($requiredString in @(
