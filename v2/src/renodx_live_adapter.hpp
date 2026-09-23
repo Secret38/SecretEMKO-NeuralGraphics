@@ -164,14 +164,6 @@ class RenoDxLiveAdapter {
   }
   const std::string& reason() const { return reason_; }
 
-  void restore_provider_overlay() {
-    if (!valid_ || !overlay_hidden_ || module_ == nullptr) return;
-    auto callback = reinterpret_cast<void(*)(reshade::api::effect_runtime*)>(
-        reinterpret_cast<unsigned char*>(module_) + kOverlayCallbackOffset);
-    reshade::register_overlay("RenoDX-DLSSNR", callback);
-    overlay_hidden_ = false;
-  }
-
  private:
   static constexpr DWORD kRequiredSize = 1732608;
   static constexpr uintptr_t kImGuiSlotOffset = 0x196ca0;
