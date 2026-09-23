@@ -424,7 +424,7 @@ void WriteNeuralSettings() {
   g_saved_nr = g_nr;
 }
 
-void LoadNeuralSettings() {
+void LoadNeuralSettings(bool apply_live = false) {
   ReadConfig(kProviderSection, "NeuralUplift", g_nr.enabled);
   ReadConfig(kProviderSection, "NREnableUpscaling", g_nr.enable_upscaling);
   ReadConfig(kProviderSection, "NRPreset", g_nr.preset);
@@ -452,7 +452,15 @@ void LoadNeuralSettings() {
   ReadConfig(kOwnSection, "BackendsNextStart", backends);
   g_backends_next_start = backends != 0;
   g_saved_nr = g_nr;
-  g_live.synchronize_all(ToLiveDesired(g_nr));
+
+  // RenoDX reads the persisted [RenoDX.DLSS5] values during its own
+  // initialization. Do not rewrite every provider field merely because SECRET
+  // EMKO opened: startup is discovery-only. Explicit reloads/user edits may
+  // queue a live diff after the verified adapter has established its baseline.
+  if (apply_live)
+    g_live.queue_diff(ToLiveDesired(g_nr));
+  else
+    g_live.set_baseline(ToLiveDesired(g_nr));
 }
 
 void ApplyProfile(int index) {
@@ -604,7 +612,7 @@ void DrawOverview() {
   if (ImGui::Button("Reload settings", ImVec2(150, 34))) {
     const NeuralSettings before_reload = g_nr;
     const bool previous_provider_restart = g_provider_restart_pending;
-    LoadNeuralSettings();
+    LoadNeuralSettings(true);
     LoadBridgeConfig();
     g_provider_restart_pending =
         previous_provider_restart || ProviderRestartOnlyChange(before_reload, g_nr);
