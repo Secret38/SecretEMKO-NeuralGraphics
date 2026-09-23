@@ -1,0 +1,341 @@
++  out += "  hud             " + std::string(ToString(intent.hud)) + "\n";
++
++  out += "\nMACHINE\n";
++  out += "  startup         " + std::string(ToString(facts.startup)) + "\n";
++  out += "  subsystems on   " + Int(static_cast<long long>(facts.safety.count_enabled())) +
++         " of " + Int(static_cast<long long>(kSubsystemCount)) + "\n";
++  out += "  materials known " + Int(static_cast<long long>(facts.materials.count())) + "\n";
++  out += "  second pass     " + std::string(ToString(facts.allowed_second_pass)) + "\n";
++  out += "  motion detail   " + std::string(ToString(facts.allowed_quality)) + "\n";
++  out += "  video memory    " + std::string(ToString(facts.vram.verdict)) + "\n";
++
++  out += "\nDECIDED\n";
++  out += "  image pass      " + std::string(Yes(plan.neural_enabled)) + "\n";
++  out += "  motion source   " + std::string(ToString(plan.arbitration.motion)) + "\n";
++  out += "  evaluations     " + Int(plan.passes.count());
++  if (plan.passes.second_pass_runs()) {
++    out += " (second at " + Num(plan.passes.blend) + ", " +
++           std::string(ToString(plan.passes.scale)) + ")";
++  }
++  out += "\n";
++  out += "  per pass        " + Num(plan.passes.per_pass_strength) + "\n";
++  out += "  composite       " +
++         std::string(plan.composite.passthrough ? "passthrough" : "per material") + "\n";
++  out += "  render scale    " + Num(plan.provider.render_scale) + "\n";
++  out += "  intensity       " + Num(plan.provider.intensity) + "\n";
++  out += "  multiplier      " + Int(plan.frames.multiplier) + "\n";
++  out += "  base fps        " + Int(plan.frames.base_fps_target) + "\n";
++  out += "  pacing          " + std::string(ToString(plan.frames.pacing)) + "\n";
++  out += "  restart needed  " + std::string(Yes(plan.restart_required)) + "\n";
++
++  out += "\nWHY\n";
++  if (plan.notes.empty()) {
++    out += "  (nothing to report)\n";
++  }
++  for (const Note& note : plan.notes) {
++    out += "  [" + std::string(SeverityName(note.severity)) + "] " + note.text + "\n";
++  }
++
++  out += "\n" + SummariseCapabilities(snap);
++  return out;
++}
++
++}  // namespace emko::core
+diff --git a/v3/src/core/explain.hpp b/v3/src/core/explain.hpp
+new file mode 100644
+index 0000000..1a23b20
+--- /dev/null
++++ b/v3/src/core/explain.hpp
+@@ -0,0 +1,65 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/explain.hpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ *
++ * Rendering a whole decision as text.
++ *
++ * Two jobs, and the second is the reason this exists now rather than later.
++ *
++ * FOR A PERSON
++ *
++ * "It isn't working" is not a bug report, and it is not the reporter's fault
++ * that it isn't - the interesting state is spread across twenty capability
++ * nodes, a plan, and whatever the machine happened to be doing. One button that
++ * produces all of it, in an order somebody can read, turns that into a report.
++ *
++ * FOR THE NEXT SIX MONTHS OF CHANGES
++ *
++ * Everything in the Windows layer is about to be run for the first time, and
++ * first runs produce findings, and findings produce changes. Every one of those
++ * changes can silently alter a decision somewhere else - a threshold moved for
++ * one reason quietly changing what happens at a different strength, on a
++ * different machine, in a case nobody was looking at.
++ *
++ * So this output is deterministic and the tests hold a recorded copy of it
++ * across a grid of situations. Change a rule and the diff shows exactly which
++ * situations moved. That is either the change that was intended, in which case
++ * the recording is updated deliberately, or it is the one that was not, in
++ * which case it has been caught before it shipped.
++ *
++ * Which means the formatting rules here are load-bearing rather than cosmetic:
++ *
++ *   No timestamps, no durations, no measured values that vary between runs.
++ *   Floats to two decimals, because more digits record noise as if it were a
++ *   decision.
++ *   Fixed order everywhere - capability nodes in declaration order, notes in
++ *   the order the planner produced them.
++ *
++ * Anything that breaks those turns a useful diff into a meaningless one.
++ */
++
++#ifndef SECRETEMKO_CORE_EXPLAIN_HPP
++#define SECRETEMKO_CORE_EXPLAIN_HPP
++
++#include <string>
++
++#include "core/capability.hpp"
++#include "core/plan.hpp"
++
++namespace emko::core {
++
++// The whole decision, in the order somebody would want to read it: what was
++// asked for, what the machine could give, what was decided, and why.
++//
++// Deterministic for a given (intent, snapshot, facts). Nothing here reads a
++// clock or a filesystem.
++std::string Summarise(const Snapshot& snap, const Plan& plan,
++                      const RuntimeFacts& facts);
++
++// Just the capability table, which is the half most bug reports need.
++std::string SummariseCapabilities(const Snapshot& snap);
++
++}  // namespace emko::core
++
++#endif  // SECRETEMKO_CORE_EXPLAIN_HPP
+diff --git a/v3/src/core/frame/draw.cpp b/v3/src/core/frame/draw.cpp
+new file mode 100644
+index 0000000..83ad2ae
+--- /dev/null
++++ b/v3/src/core/frame/draw.cpp
+@@ -0,0 +1,110 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/frame/draw.cpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "core/frame/draw.hpp"
++
++namespace emko::core::frame {
++
++const char* ToString(Phase phase) {
++  switch (phase) {
++    case Phase::Unknown: return "unknown";
++    case Phase::Scene: return "scene";
++    case Phase::PostProcess: return "post-process";
++    case Phase::Overlay: return "overlay";
++  }
++  return "unknown";
++}
++
++PhasePrior ClassifyDraw(const DrawObservation& draw) {
++  PhasePrior prior;
++
++  // ---- Things only the world does ---------------------------------------
++
++  // Writing depth is the one signal that cannot be faked by an interface layer.
++  // Interface has no depth; it is drawn in screen space, in order, and the
++  // order is the whole point. Nothing that writes depth is interface.
++  if (draw.writes_depth) {
++    prior.phase = Phase::Scene;
++    prior.confidence = kStrongPrior;
++    prior.because = "writes depth, which interface never does";
++    return prior;
++  }
++
++  // Several render targets bound at once is a deferred geometry pass filling a
++  // G-buffer. No interface layer needs more than one.
++  if (draw.bound_targets > 1) {
++    prior.phase = Phase::Scene;
++    prior.confidence = kStrongPrior;
++    prior.because = "fills several render targets at once, like a G-buffer";
++    return prior;
++  }
++
++  // Depth-tested geometry that is not a full-screen quad is the world being
++  // drawn against what is already there - transparent surfaces, particles,
++  // decals. Slightly weaker than the two above because a few effects test depth
++  // without being world geometry.
++  if (draw.tests_depth && !draw.full_screen_quad) {
++    prior.phase = Phase::Scene;
++    prior.confidence = kLikelyPrior;
++    prior.because = "geometry drawn against the depth already in the frame";
++    return prior;
++  }
++
++  // ---- Everything left is a quad, and the quad is the hard case ----------
++
++  if (!draw.full_screen_quad) {
++    // Small, unblended, depth-free geometry that is not full screen. Could be a
++    // sprite, could be a piece of interface, could be an offscreen helper. The
++    // honest answer is that one draw cannot tell, and saying so is what keeps
++    // segmentation from being handed a confident wrong answer.
++    if (!draw.alpha_blend) {
++      prior.phase = Phase::Unknown;
++      prior.confidence = 0.0f;
++      prior.because = "small geometry with no depth and no blending";
++      return prior;
++    }
++
++    // Blended screen-space geometry that does not cover the frame: text, icons,
++    // bars, markers. This is what most of an RP server's interface is.
++    prior.phase = Phase::Overlay;
++    prior.confidence = kLikelyPrior;
++    prior.because = "blended screen-space geometry, the shape interface takes";
++    return prior;
++  }
++
++  // A full-screen quad with no depth and no blending replaces the image
++  // wholesale: tone mapping, a copy, a resolve. Interface composites onto what
++  // is there rather than replacing it, so this is not interface.
++  if (!draw.alpha_blend) {
++    prior.phase = Phase::PostProcess;
++    prior.confidence = kLikelyPrior;
++    prior.because = "replaces the whole image rather than compositing onto it";
++    return prior;
++  }
++
++  // A blended full-screen quad straight onto the presented image. On a server
++  // with a browser-rendered interface this is exactly what that layer looks
++  // like: one quad, the size of the screen, composited last.
++  //
++  // But bloom composites look identical. The only thing that separates them is
++  // where in the frame it happened, and this function is not allowed to know
++  // that - so it reports a weak preference and lets segmentation decide. A
++  // strong answer here would be a guess wearing a number.
++  if (draw.targets_backbuffer) {
++    prior.phase = Phase::Overlay;
++    prior.confidence = kWeakPrior;
++    prior.because = "a blended full-screen layer on the presented image, which "
++                    "is either interface or a bloom composite";
++    return prior;
++  }
++
++  prior.phase = Phase::PostProcess;
++  prior.confidence = kWeakPrior;
++  prior.because = "a blended full-screen pass onto an intermediate target";
++  return prior;
++}
++
++}  // namespace emko::core::frame
+diff --git a/v3/src/core/frame/draw.hpp b/v3/src/core/frame/draw.hpp
+new file mode 100644
+index 0000000..d9dfdce
+--- /dev/null
++++ b/v3/src/core/frame/draw.hpp
+@@ -0,0 +1,114 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/frame/draw.hpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ *
++ * Telling the parts of a frame apart.
++ *
++ * Everything that is still blocked needs the same thing first: knowing where in
++ * the frame the world stops and the interface begins. Generated frames drawn
++ * over a health bar are wrong by construction. A neural pass applied to chat
++ * text is wrong by construction. And on an RP server there is more interface on
++ * screen than in single-player, drawn by a browser the game does not own, so
++ * "it mostly works in GTA" is not good enough here.
++ *
++ * WHAT WE ACTUALLY GET TO SEE
++ *
++ * Not much, and none of it says what it is. A draw call arrives as: a shader
++ * identity, how many vertices, what is bound, whether depth is written or
++ * tested, whether blending is on, and where in the frame it happened. There is
++ * no flag that says "this is the HUD".
++ *
++ * So classification is inference, and inference that is wrong is worse than no
++ * inference: excluding the world because it looked like interface produces a
++ * frozen screen, and including the interface because it looked like world
++ * produces smeared text. That is why nothing here returns a bare answer. Every
++ * verdict carries a confidence and a reason, and the stage above refuses to act
++ * until the same answer has held still for a while.
++ *
++ * WHY THIS FILE ONLY GIVES A PRIOR
++ *
++ * One draw in isolation cannot be classified reliably, and pretending otherwise
++ * is the mistake that makes these systems fragile. A full-screen quad with
++ * blending disabled is a post-process; the same quad with blending enabled is
++ * probably interface - unless it is a bloom composite, which is also blended.
++ * The thing that separates them is *where in the frame it happened*, and a
++ * single draw does not know that.
++ *
++ * So this file produces a prior from what one draw can support, and
++ * segmentation.hpp resolves it with the frame's own shape. The split is not
++ * tidiness: it is what stops a per-draw rule from being tuned until it fits one
++ * particular scene and breaks on the next.
++ */
++
++#ifndef SECRETEMKO_CORE_FRAME_DRAW_HPP
++#define SECRETEMKO_CORE_FRAME_DRAW_HPP
++
++#include <cstdint>
++#include <string>
++
++namespace emko::core::frame {
++
++// What a draw call looks like from the outside. Every field is something an
++// add-on can actually read at draw time; nothing here requires the game's
++// cooperation.
++struct DrawObservation {
++  std::uint64_t shader_hash = 0;   // pixel shader identity, 0 = unknown
++  std::uint32_t draw_index = 0;    // position within this frame
++  std::uint32_t vertex_count = 0;
++  std::uint32_t instance_count = 1;
++
++  std::uint32_t target_width = 0;
++  std::uint32_t target_height = 0;
++  std::uint32_t bound_targets = 1;  // how many render targets are bound at once
++
++  bool writes_depth = false;
++  bool tests_depth = false;
++  bool alpha_blend = false;
++
++  // Geometry covering the whole viewport, which is what a post-process and most
++  // interface layers both look like.
++  bool full_screen_quad = false;
++
++  // The render target is the one that will be presented, rather than an
++  // intermediate.
++  bool targets_backbuffer = false;
++
++  [[nodiscard]] bool touches_depth() const { return writes_depth || tests_depth; }
++};
++
++// Where in the frame a draw belongs.
++enum class Phase : std::uint8_t {
++  Unknown = 0,
++  Scene,        // the world: geometry, lighting, anything with depth
++  PostProcess,  // full-screen image operations on the finished world
++  Overlay,      // the interface, including anything a browser rendered
++};
++
++const char* ToString(Phase phase);
++
++// A prior, not an answer. `confidence` is how much this one draw supports the
++// phase on its own; `because` is the single most load-bearing reason, kept so a
++// wrong classification can be argued with rather than just disbelieved.
++struct PhasePrior {
++  Phase phase = Phase::Unknown;
++  float confidence = 0.0f;  // 0..1
++  const char* because = "nothing distinctive";
++
++  [[nodiscard]] bool strong() const { return confidence >= 0.75f; }
++};
++
++// Deliberately does not take frame context. See the header comment: the moment
++// this function knows where it is in the frame, its rules start absorbing the
++// frame's shape and stop being checkable on their own.
++PhasePrior ClassifyDraw(const DrawObservation& draw);
++
