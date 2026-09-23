@@ -10,8 +10,8 @@ $ProgressPreference = "SilentlyContinue"
 
 $RepoRoot = (Resolve-Path "$PSScriptRoot\..").Path
 $Upstream = "https://github.com/clshortfuse/renodx.git"
-$BridgeUrl = "https://github.com/NIGos/dlss5-bridge/releases/download/v1.4.12/dlss5-bridge.addon64"
-$BridgeHash = "4F2ACECC1026AE89AC0B92767BE66CEEA2662AD0EF88710B89C7DA7840D548D4"
+$BridgeUrl = "https://github.com/NIGos/dlss5-bridge/releases/download/v1.4.13-pre8/dlss5-bridge.addon64"
+$BridgeHash = "C4C8B5BC4B26B2B3F3BF2767CDB708546D62F7D0BBB63D24E940C736DA9EFE26"
 
 if (Test-Path -LiteralPath $WorkDir) { Remove-Item -LiteralPath $WorkDir -Recurse -Force }
 New-Item -ItemType Directory -Path $WorkDir -Force | Out-Null
@@ -56,7 +56,7 @@ $built = Get-ChildItem -LiteralPath $buildDir -Recurse -File -Filter "renodx-sec
 if (-not $built) { throw "renodx-secretemko.addon64 not found after build" }
 
 $distRoot = Join-Path $RepoRoot "dist"
-$stage = Join-Path $distRoot "SecretEMKO-NeuralGraphics-v2.0.0-rc3"
+$stage = Join-Path $distRoot "SecretEMKO-NeuralGraphics-v2.0.0-rc4"
 $zip = "$stage.zip"
 if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 if (Test-Path $zip) { Remove-Item $zip -Force }
@@ -109,7 +109,7 @@ Copy-Item (Join-Path $RepoRoot "UNINSTALL_SECRET_EMKO.bat") (Join-Path $stage "U
 Copy-Item (Join-Path $src "LICENSE") (Join-Path $stage "licenses\RenoDX-LICENSE.txt") -Force
 
 $bridgeLicense = Join-Path $WorkDir "DLSS5-Bridge-LICENSE.txt"
-Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/NIGos/dlss5-bridge/d1cc508a7097534c5c0e01a868ebe3b6657b932b/LICENSE" -OutFile $bridgeLicense
+Invoke-WebRequest -UseBasicParsing -Uri "https://raw.githubusercontent.com/NIGos/dlss5-bridge/ecd1b00674020a1e8c76a9cb653a1a21d11676a0/LICENSE" -OutFile $bridgeLicense
 Copy-Item $bridgeLicense (Join-Path $stage "licenses\DLSS5-Bridge-LICENSE.txt") -Force
 
 $reshadeLicense = Join-Path $WorkDir "ReShade-LICENSE.md"
@@ -122,11 +122,13 @@ Copy-Item $swapperLicense (Join-Path $stage "licenses\DLSS5-Swapper-LICENSE.txt"
 
 $manifest = [ordered]@{
     product = "SECRET EMKO Neural Graphics"
-    version = "2.0.0-rc3"
+    version = "2.0.0-rc4"
     built = (Get-Date).ToUniversalTime().ToString("o")
     renodx_commit = $Commit
-    bridge_version = "1.4.12"
+    bridge_version = "1.4.13-pre8"
     bridge_sha256 = $BridgeHash
+    bridge_commit = "ecd1b00674020a1e8c76a9cb653a1a21d11676a0"
+    bridge_policy = "Pinned prerelease selected for internal NVIDIA Optical Flow synthetic input and MinHook lifecycle fixes; exact asset SHA-256 verified."
     renodx_dlss5_live_compatible_sha256 = "D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C8593952"
     live_adapter_provenance = "Derived from MIT DLSS5-Swapper v4.7 UI bridge, commit 24bd2aca7a7451ce94e564366381e33cac9dcdba"
     addon_sha256 = (Get-FileHash -LiteralPath (Join-Path $stage "SecretEMKO.addon64") -Algorithm SHA256).Hash
