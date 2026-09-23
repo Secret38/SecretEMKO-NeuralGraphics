@@ -98,12 +98,32 @@ jobs:
           }
           catch {
             $failed = $true
-            if ($_.Exception.Message -notmatch "built RC2 artifact") { throw }
+            if ($_.Exception.Message -notmatch "built RC3 artifact") { throw }
           }
 
           if (-not $failed) { throw "Source tree unexpectedly accepted Full Neural." }
           if (-not (Test-Path (Join-Path $plugins "sentinel.txt"))) { throw "Source preflight modified the existing plugins folder." }
           if (@(Get-ChildItem -LiteralPath $app -Directory -Filter "plugins.before-secret-emko.*").Count -ne 0) { throw "Source preflight isolated plugins before package validation." }
+
+      - name: Validate pinned RenoDX v4.70 live-control binary
+        shell: powershell
+        run: |
+          $url = "https://github.com/RankFTW/rhi-repo/releases/download/renodx-dlss5-4.70/renodx-dlss5_4.70.zip"
+          $zip = Join-Path $env:RUNNER_TEMP "renodx-dlss5_4.70.zip"
+          $dir = Join-Path $env:RUNNER_TEMP "renodx-dlss5_4.70"
+          Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $zip
+          $packageHash = (Get-FileHash $zip -Algorithm SHA256).Hash
+          if ($packageHash -ine "D6E356D01B429AF6288F488A4926C44F1D779A7D4586EE8C79D04D3A09A536E6") {
+            throw "Unexpected RenoDX v4.70 package hash: $packageHash"
+          }
+          Expand-Archive $zip $dir -Force
+          $consumer = Get-ChildItem $dir -Recurse -File -Filter "renodx-dlss5*.addon64" | Select-Object -First 1
+          if (-not $consumer) { throw "RenoDX DLSS5 consumer missing from pinned package" }
+          if ($consumer.Length -ne 1732608) { throw "Unexpected RenoDX consumer size: $($consumer.Length)" }
+          $hash = (Get-FileHash $consumer.FullName -Algorithm SHA256).Hash
+          if ($hash -ine "D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C8593952") {
+            throw "RenoDX live-control binary changed: $hash"
+          }
 
       - name: Build RenoDX-native addon and package
         shell: powershell
@@ -113,7 +133,7 @@ jobs:
       - name: Verify release files
         shell: powershell
         run: |
-          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc2"
+          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3"
           $required = @(
             "SecretEMKO.addon64",
             "dlss5-bridge.addon64",
@@ -129,7 +149,8 @@ jobs:
             "MAIN-SYSTEM.json",
             "COMPATIBILITY.md",
             "README.md",
-            "VERSIONS.json"
+            "VERSIONS.json",
+            "licenses\DLSS5-Swapper-LICENSE.txt"
           )
           foreach ($f in $required) {
             $p = Join-Path $stage $f
@@ -141,7 +162,7 @@ jobs:
       - name: End-to-end RP Visual isolation and restore test
         shell: powershell
         run: |
-          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc2").Path
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3").Path
           $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO FiveM Legacy Test"
           $app = Join-Path $fake "FiveM.app"
           $oldPlugins = Join-Path $app "plugins"
@@ -185,7 +206,7 @@ jobs:
       - name: End-to-end missing plugins creation test
         shell: powershell
         run: |
-          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc2").Path
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3").Path
           $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Missing Plugins Test"
           $app = Join-Path $fake "FiveM.app"
           New-Item -ItemType Directory -Path $app -Force | Out-Null
@@ -207,7 +228,7 @@ jobs:
       - name: Reject unsupported Full Neural hardware before modification
         shell: powershell
         run: |
-          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc2").Path
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3").Path
           $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Unsupported Neural Test"
           $app = Join-Path $fake "FiveM.app"
           $plugins = Join-Path $app "plugins"
@@ -229,8 +250,8 @@ jobs:
       - name: Upload v2 package
         uses: actions/upload-artifact@v4
         with:
-          name: SecretEMKO-NeuralGraphics-v2.0.0-rc2
+          name: SecretEMKO-NeuralGraphics-v2.0.0-rc3
           path: |
-            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc2/**
-            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc2.zip
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc3/**
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc3.zip
           if-no-files-found: error
