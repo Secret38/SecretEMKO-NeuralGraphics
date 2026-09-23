@@ -1,54 +1,205 @@
 # SECRET EMKO Neural Graphics
 
-Current product: **v2.0.0-rc3** for FiveM GTA V Legacy x64.
+**Modern visual and neural-rendering control system for FiveM GTA V Legacy x64.**  
+Created and maintained by **Secret EMKO** · GitHub owner: **@Secret38**
 
-## End users: use the built package
+Current release candidate: **v2.0.0-rc3**
 
-**Do not use GitHub `Code -> Download ZIP` as the Full Neural installer.** The source archive intentionally does not contain the compiled `SecretEMKO.addon64` and packaged bridge.
+> One product. One installer. One control surface.  
+> ReShade, RenoDX, DLSS 5 Bridge and NVIDIA runtimes are treated as backend technologies where required — the user-facing product is **SECRET EMKO Neural Graphics**.
 
-Use the latest successful GitHub Actions artifact named:
+## Who this is for
+
+### RP Visual
+For normal FiveM RP players who want a clean, reversible graphics setup with:
+
+- SECRET EMKO Main and Stream presets
+- current public ReShade shader dependencies
+- automatic FiveM Legacy path detection
+- safe isolation of an existing `plugins` folder
+- rollback and uninstall restore
+- no neural/native add-on stack
+
+Use:
+
+```text
+INSTALL_SECRET_EMKO.bat
+```
+
+### Full Neural
+For **GeForce RTX 50 Series** systems where the server/environment permits ReShade Full Add-on client add-ons.
+
+Adds:
+
+- SECRET EMKO Neural Graphics control surface
+- verified RenoDX DLSS 5 neural backend
+- DLSS 5 Bridge backend for FiveM GTA V Legacy D3D11
+- pinned and verified NVIDIA DLSS Neural Rendering / DLSS SR runtimes
+- live neural parameter control where the verified backend exposes it
+- persistent backend load policy between launches
+
+Use:
+
+```text
+INSTALL_SECRET_EMKO_FULL_NEURAL.bat
+```
+
+## End users: download the built package
+
+**Do not use GitHub `Code -> Download ZIP` as the Full Neural installer.**
+
+The source archive intentionally does not contain the compiled native add-ons.
+
+Download the latest successful GitHub Actions artifact named:
 
 ```text
 SecretEMKO-NeuralGraphics-v2.0.0-rc3
 ```
 
-Extract it completely, close FiveM/GTA V, then run one of:
+Then:
+
+1. Extract the ZIP completely.
+2. Close FiveM and GTA V.
+3. Run the installer for the desired mode.
+4. Start FiveM.
+5. Open ReShade with **Home / Pos1**.
+6. Use **SECRET EMKO Neural Graphics** as the primary settings surface.
+
+## Clean-room FiveM installation
+
+SECRET EMKO is designed to avoid destroying an existing FiveM setup.
+
+If `FiveM.app\plugins` does not exist, it is created automatically.
+
+If an unrelated non-empty `plugins` folder already exists, the default behavior is:
 
 ```text
-INSTALL_SECRET_EMKO.bat
-INSTALL_SECRET_EMKO_FULL_NEURAL.bat
+plugins
+  -> plugins.before-secret-emko.<timestamp>
+
+new clean plugins
+  -> SECRET EMKO environment
 ```
 
-- **RP Visual** is the default path for ordinary RP use: official standard ReShade + Main/Stream presets + public shader dependencies.
-- **Full Neural** is the explicit RTX 50 Series path for environments where the server/user policy permits ReShade Full Add-on client add-ons.
-- Missing `FiveM.app\plugins` is created automatically.
-- An existing unrelated `plugins` directory is isolated as `plugins.before-secret-emko.<timestamp>` instead of being modified in place.
-- Failed first installs attempt automatic rollback.
-- Uninstall restores the preserved pre-SECRET-EMKO plugins directory.
-- FiveM Enhanced is not modified by this Legacy release.
-- Proprietary effects such as QuantV are never fetched from unofficial mirrors.
-- Frame Generation remains gated; DLL presence is not treated as proof of a functional FiveM FG path.
+Existing DLL/ASI/add-on hooks remain in the archived folder instead of being mixed blindly into the new graphics chain.
 
-FiveM server plugin policy, Pure Mode, anti-cheat and ReShade restrictions are respected; SECRET EMKO contains no bypass.
+If the first isolated installation fails, SECRET EMKO attempts to restore the original `plugins` folder automatically.
 
-## Repository layout
+Uninstall preserves the removed SECRET EMKO environment and restores the original pre-SECRET-EMKO plugins folder when one existed.
+
+## SECRET EMKO as the main system
+
+In Full Neural mode, the intended control model is:
 
 ```text
-v2/          active product, installer, RenoDX add-on source, presets and policy
-legacy/v1/   archival note for the retired v1 prototype
-.github/     active v2 CI only
+SECRET EMKO Neural Graphics
+        |
+        +-- Profiles
+        +-- Neural Rendering
+        +-- Quality
+        +-- Bridge
+        +-- Diagnostics
+        |
+        +-- RenoDX backend
+        +-- DLSS 5 Bridge backend
+        +-- NVIDIA DLSS runtimes
 ```
 
-Current technical details:
+The verified RenoDX v4.70 settings page is hidden only after SECRET EMKO proves that live control works in the current session. If verification fails, the original RenoDX page remains visible as a recovery fallback.
+
+DLSS 5 Bridge has no separate ImGui settings page and remains backend-only.
+
+## Live control and persistence
+
+Supported RenoDX settings are applied through the verified provider's own settings callback and read back immediately for confirmation.
+
+Bridge settings are written to `dlss5-bridge.cfg`; the bridge re-reads its configuration while the game is running.
+
+Persistent state is stored in:
+
+```text
+ReShade.ini
+dlss5-bridge.cfg
+[SecretEMKO] BackendsNextStart
+[ADDON] DisabledAddons
+```
+
+If Neural Rendering is disabled:
+
+- the active pipeline is soft-disabled immediately;
+- RenoDX and DLSS 5 Bridge are marked not to load on the next start;
+- the backend files remain installed so re-enabling does not require another download.
+
+Native third-party add-ons are intentionally **not force-unloaded with FreeLibrary mid-session**.
+
+## Compatibility boundaries
+
+Current RC3 target:
+
+```text
+FiveM
+GTA V Legacy
+Windows x64
+```
+
+Full Neural is validated for:
+
+```text
+GeForce RTX 50 Series
+```
+
+Not claimed:
+
+- FiveM GTA V Enhanced support
+- universal Full Neural support on older NVIDIA / AMD / Intel hardware
+- Frame Generation as a finished FiveM feature
+- bypass of FiveM server plugin policy, Pure Mode, anti-cheat or ReShade restrictions
+
+SECRET EMKO respects the environment it runs in.
+
+## Repository structure
+
+```text
+v2/          active SECRET EMKO product
+legacy/v1/   retired v1 archival note
+.github/     active Windows build and validation workflow
+```
+
+Technical references:
 
 - `v2/README.md`
 - `v2/COMPATIBILITY.md`
 - `v2/VERSIONS.json`
 - `v2/MAIN-SYSTEM.json`
+- `v2/THIRD_PARTY_NOTICES.md`
 
-The Windows CI validates PowerShell syntax, live ReShade catalogs, official ReShade installation, RenoDX compilation, source-ZIP rejection before FiveM modification, plugin isolation/restore, missing-plugin-folder creation, unsupported Full Neural rejection, release contents and artifact upload.
+## Build validation
 
+The Windows CI validates:
 
-### v2 RC3 backend orchestration
+- PowerShell syntax
+- live ReShade package catalogs
+- official ReShade setup behavior
+- source-ZIP rejection before FiveM modification
+- exact RenoDX v4.70 live-control binary contract
+- native SECRET EMKO build
+- release contents
+- Full Neural persistence across reinstall
+- RP Visual isolation and restore
+- missing `plugins` creation
+- unsupported Full Neural hardware fail-closed behavior
+- artifact creation
 
-In Full Neural mode, SECRET EMKO is the single intended settings surface. The verified RenoDX v4.70 consumer and DLSS 5 Bridge remain real backend dependencies, but SECRET EMKO controls their live/persisted state and uses ReShade's `DisabledAddons` policy to skip loading those backends on the next start when Neural Rendering is disabled. Runtime `FreeLibrary` unloading is intentionally not used.
+## Ownership and third-party technology
+
+**SECRET EMKO Neural Graphics** is the product and integration layer created and maintained by **Secret EMKO**.
+
+Third-party technologies retain their own authorship, trademarks and licenses. SECRET EMKO does not claim ownership of ReShade, RenoDX, DLSS 5 Bridge, NVIDIA DLSS/NGX/Streamline or other external components.
+
+See `v2/THIRD_PARTY_NOTICES.md` for the complete attribution and provenance record.
+
+## License
+
+SECRET EMKO's own v2 source is released under the **MIT License**.
+
+Third-party components remain under their respective licenses and notices.
