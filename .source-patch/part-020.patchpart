@@ -1,0 +1,398 @@
++// Thresholds, named rather than inline, because every one of them is a place
++// where a future bug report will point.
++inline constexpr float kStrongPrior = 0.90f;
++inline constexpr float kLikelyPrior = 0.75f;
++inline constexpr float kWeakPrior = 0.50f;
++
++}  // namespace emko::core::frame
++
++#endif  // SECRETEMKO_CORE_FRAME_DRAW_HPP
+diff --git a/v3/src/core/frame/material_file.cpp b/v3/src/core/frame/material_file.cpp
+new file mode 100644
+index 0000000..3349d20
+--- /dev/null
++++ b/v3/src/core/frame/material_file.cpp
+@@ -0,0 +1,228 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/frame/material_file.cpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "core/frame/material_file.hpp"
++
++#include <algorithm>
++#include <cstdio>
++#include <sstream>
++
++namespace emko::core::frame {
++namespace {
++
++// Written into files a person may edit, so they are words rather than numbers
++// and they do not change between releases.
++constexpr const char* kNames[] = {"environment", "character", "skin",    "hair",
++                                  "vehicle",     "weapon",    "vegetation", "glass"};
++
++const char* StructureName(Structure structure) {
++  switch (structure) {
++    case Structure::World: return "world";
++    case Structure::Subject: return "subject";
++    case Structure::Transparent: return "transparent";
++    case Structure::Interface: return "interface";
++    case Structure::Unknown: return "unknown";
++  }
++  return "unknown";
++}
++
++Structure StructureFrom(const std::string& name) {
++  if (name == "world") return Structure::World;
++  if (name == "subject") return Structure::Subject;
++  if (name == "transparent") return Structure::Transparent;
++  if (name == "interface") return Structure::Interface;
++  return Structure::Unknown;
++}
++
++std::string Hex(std::uint64_t value) {
++  char buffer[32] = {};
++  std::snprintf(buffer, sizeof(buffer), "%016llx",
++                static_cast<unsigned long long>(value));
++  return buffer;
++}
++
++bool ParseHex(const std::string& text, std::uint64_t& out) {
++  if (text.empty() || text.size() > 16) return false;
++  std::uint64_t value = 0;
++  for (const char c : text) {
++    value <<= 4;
++    if (c >= '0' && c <= '9') {
++      value |= static_cast<std::uint64_t>(c - '0');
++    } else if (c >= 'a' && c <= 'f') {
++      value |= static_cast<std::uint64_t>(c - 'a' + 10);
++    } else if (c >= 'A' && c <= 'F') {
++      value |= static_cast<std::uint64_t>(c - 'A' + 10);
++    } else {
++      return false;
++    }
++  }
++  out = value;
++  return true;
++}
++
++// Splits on whitespace, skipping blank lines and comments. Returns false for a
++// line that should be ignored entirely rather than treated as malformed.
++//
++// A comment is the whole line from the first '#', and it has to be, because the
++// first version dropped only the '#' token and then happily read the words
++// after it - so "# 0000000000002222 skin" parsed as an assignment. In a file
++// whose header is six lines of explanation, that is not a corner case.
++bool Fields(const std::string& line, std::vector<std::string>& out) {
++  out.clear();
++  std::istringstream stream(line);
++  std::string token;
++  while (stream >> token) {
++    if (token[0] == '#') break;
++    out.push_back(token);
++  }
++  return !out.empty();
++}
++
++}  // namespace
++
++const char* FileName(Material material) {
++  const auto index = static_cast<std::size_t>(material);
++  return index < kMaterialCount ? kNames[index] : kNames[0];
++}
++
++bool ParseMaterial(const std::string& name, Material& out) {
++  for (std::size_t i = 0; i < kMaterialCount; ++i) {
++    if (name == kNames[i]) {
++      out = static_cast<Material>(i);
++      return true;
++    }
++  }
++  return false;
++}
++
++std::string WriteObserved(const ObservedFile& file) {
++  std::ostringstream out;
++  out << "# SECRET EMKO material observations\n"
++      << "# Written by the input provider. Not edited by hand - the file to\n"
++      << "# edit is the assignment one next to it.\n"
++      << "#\n"
++      << "# shader           structure    draws      presence  assigned\n"
++      << "build " << (file.build.empty() ? "unknown" : file.build) << "\n"
++      << "frames " << file.frames << "\n";
++
++  for (const ObservedShader& shader : file.shaders) {
++    char presence[16] = {};
++    std::snprintf(presence, sizeof(presence), "%.4f", shader.presence);
++    out << Hex(shader.shader) << ' ' << StructureName(shader.structure) << ' '
++        << shader.draws << ' ' << presence << ' ' << (shader.assigned ? "yes" : "no")
++        << '\n';
++  }
++  return out.str();
++}
++
++ObservedFile ParseObserved(const std::string& text) {
++  ObservedFile file;
++  std::istringstream stream(text);
++  std::string line;
++  std::vector<std::string> fields;
++
++  while (std::getline(stream, line)) {
++    if (!Fields(line, fields)) continue;
++
++    if (fields[0] == "build" && fields.size() >= 2) {
++      file.build = fields[1];
++      continue;
++    }
++    if (fields[0] == "frames" && fields.size() >= 2) {
++      file.frames = std::strtoull(fields[1].c_str(), nullptr, 10);
++      continue;
++    }
++    if (fields.size() < 5) continue;
++
++    ObservedShader shader;
++    if (!ParseHex(fields[0], shader.shader)) continue;
++    shader.structure = StructureFrom(fields[1]);
++    shader.draws = std::strtoull(fields[2].c_str(), nullptr, 10);
++    shader.presence = std::strtod(fields[3].c_str(), nullptr);
++    shader.assigned = fields[4] == "yes";
++    file.shaders.push_back(shader);
++  }
++  return file;
++}
++
++std::string WriteAssigned(const AssignedFile& file) {
++  std::ostringstream out;
++  out << "# SECRET EMKO material assignments\n"
++      << "#\n"
++      << "# One line per shader: the shader's identity, then what it draws.\n"
++      << "# Valid names: environment character skin hair vehicle weapon\n"
++      << "#              vegetation glass\n"
++      << "#\n"
++      << "# The build line matters. These identities belong to one game build;\n"
++      << "# on a different one they are different shaders with the same numbers,\n"
++      << "# and the file is refused rather than applied.\n"
++      << "#\n"
++      << "# Safe to edit, and safe to share with anyone on the same build.\n"
++      << "build " << (file.build.empty() ? "unknown" : file.build) << "\n";
++
++  for (const AssignedShader& shader : file.shaders) {
++    out << Hex(shader.shader) << ' ' << FileName(shader.material) << '\n';
++  }
++  return out.str();
++}
++
++AssignedFile ParseAssigned(const std::string& text) {
++  AssignedFile file;
++  std::istringstream stream(text);
++  std::string line;
++  std::vector<std::string> fields;
++
++  while (std::getline(stream, line)) {
++    if (!Fields(line, fields)) continue;
++
++    if (fields[0] == "build" && fields.size() >= 2) {
++      file.build = fields[1];
++      continue;
++    }
++    if (fields.size() < 2) continue;
++
++    AssignedShader shader;
++    if (!ParseHex(fields[0], shader.shader)) continue;
++
++    // A name nobody recognises is skipped rather than defaulted. Defaulting
++    // would silently turn a typo into "environment", which is a real setting
++    // and would look like the calibration having been applied.
++    if (!ParseMaterial(fields[1], shader.material)) continue;
++
++    file.shaders.push_back(shader);
++  }
++  return file;
++}
++
++ObservedFile Describe(const MaterialCatalogue& catalogue, std::size_t limit) {
++  ObservedFile file;
++  file.build = catalogue.build();
++  file.frames = catalogue.frames_observed();
++
++  // The unassigned ones first, in the order worth asking about, because that is
++  // what this file exists for.
++  for (const auto& pending : catalogue.needs_calibration(limit)) {
++    ObservedShader shader;
++    shader.shader = pending.shader;
++    shader.structure = pending.structure;
++    shader.draws = pending.draws;
++    shader.presence = pending.presence;
++    shader.assigned = false;
++    file.shaders.push_back(shader);
++  }
++  return file;
++}
++
++std::size_t Apply(const AssignedFile& file, MaterialCatalogue& catalogue,
++                  AssignmentSource source) {
++  std::size_t taken = 0;
++  for (const AssignedShader& shader : file.shaders) {
++    if (catalogue.assign(shader.shader, shader.material, source, file.build)) ++taken;
++  }
++  return taken;
++}
++
++}  // namespace emko::core::frame
+diff --git a/v3/src/core/frame/material_file.hpp b/v3/src/core/frame/material_file.hpp
+new file mode 100644
+index 0000000..9a32741
+--- /dev/null
++++ b/v3/src/core/frame/material_file.hpp
+@@ -0,0 +1,92 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/frame/material_file.hpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ *
++ * Getting the material catalogue between the two add-ons, and across sessions.
++ *
++ * The input provider watches draws on the render thread; the control surface
++ * asks the player what things are. They are separate modules in separate
++ * binaries, so the answer has to travel.
++ *
++ * It travels as two small text files rather than through the shared telemetry
++ * block, for three reasons that all point the same way: a calibration is written
++ * once and read rarely, so it does not belong in a structure sized for per-frame
++ * traffic; the table has to survive a restart, which shared memory does not; and
++ * a text file is something a person can read, check, hand to someone else on the
++ * same game build, and send back when it is wrong. The last one matters most -
++ * a shipped catalogue starts as somebody's calibration file.
++ *
++ * The parser is here, in core, because a file format that is only exercised by
++ * the thing that writes it is a file format that breaks silently on the version
++ * where somebody edits it by hand.
++ */
++
++#ifndef SECRETEMKO_CORE_FRAME_MATERIAL_FILE_HPP
++#define SECRETEMKO_CORE_FRAME_MATERIAL_FILE_HPP
++
++#include <cstdint>
++#include <string>
++#include <vector>
++
++#include "core/frame/materials.hpp"
++
++namespace emko::core::frame {
++
++// One line of the observed file: what the provider saw, for the control surface
++// to ask about.
++struct ObservedShader {
++  std::uint64_t shader = 0;
++  Structure structure = Structure::Unknown;
++  std::uint64_t draws = 0;
++  double presence = 0.0;
++  bool assigned = false;
++};
++
++struct ObservedFile {
++  std::string build;
++  std::uint64_t frames = 0;
++  std::vector<ObservedShader> shaders;
++};
++
++// One line of the assigned file: what somebody decided.
++struct AssignedShader {
++  std::uint64_t shader = 0;
++  Material material = Material::Environment;
++};
++
++struct AssignedFile {
++  std::string build;
++  std::vector<AssignedShader> shaders;
++};
++
++// Both formats are one record per line, fields separated by spaces, with a
++// leading header line carrying the build identity. Comments start with '#'.
++//
++// Parsing never throws and never partially applies: a malformed line is skipped
++// with the rest of the file kept, because the realistic failure is somebody
++// editing one line by hand and getting it slightly wrong - and discarding their
++// whole calibration over that would be a worse answer than ignoring the line.
++std::string WriteObserved(const ObservedFile& file);
++ObservedFile ParseObserved(const std::string& text);
++
++std::string WriteAssigned(const AssignedFile& file);
++AssignedFile ParseAssigned(const std::string& text);
++
++// Build an observed file from a live catalogue.
++ObservedFile Describe(const MaterialCatalogue& catalogue, std::size_t limit = 64);
++
++// Apply an assigned file to a catalogue. Returns how many entries were taken;
++// entries for another build are refused by the catalogue itself, so a count
++// lower than the file's length is a real signal rather than a parse failure.
++std::size_t Apply(const AssignedFile& file, MaterialCatalogue& catalogue,
++                  AssignmentSource source);
++
++// The material names used in the files. Stable across releases: these are what
++// somebody's hand-edited calibration contains.
++const char* FileName(Material material);
++bool ParseMaterial(const std::string& name, Material& out);
++
++}  // namespace emko::core::frame
++
++#endif  // SECRETEMKO_CORE_FRAME_MATERIAL_FILE_HPP
+diff --git a/v3/src/core/frame/materials.cpp b/v3/src/core/frame/materials.cpp
+new file mode 100644
+index 0000000..855f82a
+--- /dev/null
++++ b/v3/src/core/frame/materials.cpp
+@@ -0,0 +1,280 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/frame/materials.cpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ */
++
++#include "core/frame/materials.hpp"
++
++#include <algorithm>
++
++namespace emko::core::frame {
++
++const char* ToString(Structure structure) {
++  switch (structure) {
++    case Structure::Unknown: return "unknown";
++    case Structure::World: return "world";
++    case Structure::Subject: return "subject";
++    case Structure::Transparent: return "transparent";
++    case Structure::Interface: return "interface";
++  }
++  return "unknown";
++}
++
++const char* ToString(AssignmentSource source) {
++  switch (source) {
++    case AssignmentSource::None: return "not assigned";
++    case AssignmentSource::Derived: return "derived from behaviour";
++    case AssignmentSource::Calibrated: return "set here";
++    case AssignmentSource::Shipped: return "shipped for this build";
++  }
++  return "not assigned";
++}
++
++void ShaderStats::record(std::uint64_t frame, std::uint32_t vertices, bool blended,
++                         bool depth_tested, bool depth_written, bool multi_target) {
++  if (first_frame == 0) first_frame = frame;
++
++  // One count per frame, not per draw. A shader issued four hundred times in a
++  // frame is present once; counting draws would make "appears in every frame"
++  // mean "is drawn a lot", which is a different and much less useful thing.
++  if (frame != last_frame) {
++    ++frames;
++    if (blended) ++frames_blended;
++    if (depth_tested) ++frames_depth_tested;
++    if (depth_written) ++frames_depth_written;
++    if (multi_target) ++frames_multi_target;
++    last_frame = frame;
++  }
++
++  ++draws;
++  const double n = static_cast<double>(draws);
