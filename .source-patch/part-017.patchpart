@@ -1,0 +1,354 @@
++       {Req(CapId::ReShadeHost)}},
++
++      {CapId::OpticalFlowMotion, "motion.opticalflow", "Compatibility motion",
++       "Estimated motion from the optical-flow engine. Neural rendering only.",
++       // This one is not a prerequisite but an identity: estimated motion *is*
++       // the bridge running, so it can never be livelier than the bridge is.
++       true, {Live(CapId::Bridge)}},
++
++      {CapId::FgProvider, "provider.fg", "Native input provider",
++       "Reads the game's own render data for motion, depth, HUD and pacing.",
++       true, {Req(CapId::ReShadeHost)}},
++
++      {CapId::ShaderMotion, "input.motion.shader", "Geometry motion",
++       "True per-pixel motion derived from the game's geometry.", true,
++       {Req(CapId::FgProvider)}},
++
++      {CapId::DepthInput, "input.depth", "Depth",
++       "Scene depth with a confirmed convention.", true, {Req(CapId::FgProvider)}},
++
++      {CapId::FrameSegmentation, "input.segmentation", "Frame segmentation",
++       "Knowing which draw the interface starts at.", true,
++       {Req(CapId::FgProvider)}},
++
++      {CapId::HudlessColor, "input.hudless", "HUD-less image",
++       "The scene image captured before the interface is drawn.", true,
++       {Req(CapId::FgProvider), Req(CapId::FrameSegmentation)}},
++
++      {CapId::UiLayer, "input.ui", "Interface coverage",
++       "Knowing which pixels the interface covers, so they can be left alone.",
++       true, {Req(CapId::FgProvider), Req(CapId::HudlessColor)}},
++
++      {CapId::FrameConstants, "input.constants", "Camera constants",
++       "Camera matrices and jitter aligned to the presented frame.", true,
++       {Req(CapId::FgProvider)}},
++
++      {CapId::PresentControl, "input.present", "Present control",
++       "Ownership of the swap chain and of frame pacing.", true,
++       {Req(CapId::FgProvider)}},
++
++      {CapId::CameraMotion, "motion.camera", "Camera motion",
++       "Motion reconstructed from depth. Exact for the world, not for traffic.",
++       true, {Req(CapId::DepthInput), Req(CapId::FrameConstants)}},
++
++      {CapId::StreamlineRuntime, "runtime.streamline", "Frame generation runtime",
++       "NVIDIA runtime that produces the generated frames.", true, {}},
++
++      // The two features carry their own liveness evidence - a frame counter
++      // for the pass itself - so their dependencies only need to be Ready.
++      // The runtimes are files NGX resolves on demand and are never loaded or
++      // driven by us, so for them presence on disk is the whole contribution.
++      // The image pass accepts any of the three motion sources. The generator
++      // accepts exactly one. That asymmetry is the whole safety argument, and
++      // it lives here as data rather than as a comment somewhere.
++      {CapId::NeuralRendering, "feature.nr", "Neural Rendering",
++       "The image quality feature.", true,
++       {Req(CapId::RenoDxProvider), File(CapId::DlssNrRuntime),
++        File(CapId::DlssSrRuntime), Any(CapId::OpticalFlowMotion, 1),
++        Any(CapId::CameraMotion, 1), Any(CapId::ShaderMotion, 1),
++        Opt(CapId::RenoDxLiveControl)}},
++
++      {CapId::FrameGeneration, "feature.fg", "Frame Generation",
++       "The extra-frames feature.", true,
++       {File(CapId::StreamlineRuntime), Req(CapId::ShaderMotion),
++        Req(CapId::DepthInput), Req(CapId::HudlessColor), Req(CapId::UiLayer),
++        Req(CapId::FrameConstants), Req(CapId::PresentControl)}},
++  }};
++  return defs;
++}
++
++}  // namespace
++
++const char* ToString(Lifecycle state) {
++  switch (state) {
++    case Lifecycle::Absent: return "ABSENT";
++    case Lifecycle::Installed: return "INSTALLED";
++    case Lifecycle::Loaded: return "LOADED";
++    case Lifecycle::Ready: return "READY";
++    case Lifecycle::Armed: return "ARMED";
++    case Lifecycle::Active: return "ACTIVE";
++    case Lifecycle::Blocked: return "BLOCKED";
++  }
++  return "ABSENT";
++}
++
++const char* ToString(BlockerCode code) {
++  switch (code) {
++    case BlockerCode::None: return "none";
++    case BlockerCode::MissingFile: return "file missing";
++    case BlockerCode::HashMismatch: return "unexpected build";
++    case BlockerCode::ModuleLoadFailed: return "module could not load";
++    case BlockerCode::ExportMissing: return "required export missing";
++    case BlockerCode::AbiMismatch: return "incompatible interface version";
++    case BlockerCode::ContractRefused: return "the provider refused the contract";
++    case BlockerCode::InputsMissing: return "required render inputs are missing";
++    case BlockerCode::DeviceLost: return "the graphics device was lost";
++    case BlockerCode::UnsupportedHardware: return "unsupported hardware";
++    case BlockerCode::ConflictingOwner: return "another component owns this";
++    case BlockerCode::DependencyBlocked: return "something it depends on is blocked";
++    case BlockerCode::PolicyDisabled: return "switched off on purpose";
++    case BlockerCode::RestartRequired: return "a restart is required";
++  }
++  return "unknown";
++}
++
++const std::array<CapabilityDef, kCapCount>& CapabilityDefs() { return BuildDefs(); }
++
++const CapabilityDef& DefOf(CapId id) {
++  return CapabilityDefs()[static_cast<std::size_t>(id)];
++}
++
++CapabilityGraph::CapabilityGraph() = default;
++
++void CapabilityGraph::reset() {
++  for (auto& ledger : ledgers_) ledger.clear();
++}
++
++std::array<CapabilityState, kCapCount> CapabilityGraph::resolve(Timestamp now) const {
++  std::array<CapabilityState, kCapCount> out{};
++  const auto& defs = CapabilityDefs();
++
++  for (std::size_t i = 0; i < kCapCount; ++i) {
++    const CapabilityDef& def = defs[i];
++    CapabilityState& st = out[i];
++
++    // ---- 1. What does this node's own evidence prove? ------------------
++    Lifecycle ceiling = Lifecycle::Absent;
++    Confidence ceiling_conf = Confidence::Weak;
++    const Evidence* blocker = nullptr;
++    const Evidence* liveness = nullptr;
++    bool has_setup_proof = false;  // Configured or ContractNegotiated, fresh
++
++    for (const Evidence& e : ledgers_[i].items()) {
++      if (!e.fresh(now)) continue;
++      if (e.kind == EvidenceKind::Blocker) {
++        if (blocker == nullptr || e.observed_at > blocker->observed_at) blocker = &e;
++        continue;
++      }
++      if (e.kind == EvidenceKind::Liveness) liveness = &e;
++      if (e.kind == EvidenceKind::Configured ||
++          e.kind == EvidenceKind::ContractNegotiated) {
++        has_setup_proof = true;
++      }
++      const Lifecycle proven = ProvenBy(e.kind);
++      if (Rank(proven) > Rank(ceiling)) {
++        ceiling = proven;
++        ceiling_conf = e.confidence;
++      } else if (Rank(proven) == Rank(ceiling) && e.confidence > ceiling_conf) {
++        ceiling_conf = e.confidence;
++      }
++    }
++
++    // A low-trust liveness observation - something parsed out of an artifact we
++    // do not own - is not on its own allowed to light up ACTIVE. It has to be
++    // corroborated by proof that this path was actually set up. Without that
++    // rule a stray line in someone else's log file is a green badge, which is
++    // precisely the failure v2 shipped with.
++    if (liveness != nullptr && liveness->confidence == Confidence::Weak &&
++        !has_setup_proof && ceiling == Lifecycle::Active) {
++      ceiling = Lifecycle::Armed;
++      st.reason = "delivery was only reported indirectly and is not corroborated";
++    }
++
++    st.evidence_ceiling = ceiling;
++    st.confidence = ceiling_conf;
++
++    if (blocker != nullptr) {
++      st.state = Lifecycle::Blocked;
++      st.blocker = blocker->code;
++      st.reason = blocker->detail.empty() ? ToString(blocker->code) : blocker->detail;
++      continue;
++    }
++
++    // ---- 2. How far do the dependencies let it go? ---------------------
++    int clamp = static_cast<int>(Lifecycle::Active);
++    CapId clamped_by = CapId::Count;
++    bool dependency_blocked = false;
++    CapId blocking_dep = CapId::Count;
++
++    // How much headroom one dependency leaves its dependent: once it has
++    // climbed to its own satisfaction threshold it stops constraining at all.
++    const auto contribution = [&out](const Dependency& dep) {
++      const CapabilityState& d = out[static_cast<std::size_t>(dep.id)];
++      if (Rank(d.state) >= Rank(dep.satisfies_from)) {
++        return static_cast<int>(Lifecycle::Active);
++      }
++      return Rank(d.state);
++    };
++
++    // Plain AND dependencies.
++    for (const Dependency& dep : def.deps) {
++      if (dep.kind != DepKind::Required) continue;
++      const CapabilityState& d = out[static_cast<std::size_t>(dep.id)];
++      if (d.state == Lifecycle::Blocked) {
++        dependency_blocked = true;
++        blocking_dep = dep.id;
++        break;
++      }
++      const int allowed = contribution(dep);
++      if (allowed < clamp) {
++        clamp = allowed;
++        clamped_by = dep.id;
++      }
++    }
++
++    // OR groups: the group clamps by its best member, and only blocks the
++    // dependent when every alternative is blocked or absent.
++    if (!dependency_blocked) {
++      for (std::uint8_t group = 1; group <= 8; ++group) {
++        bool group_exists = false;
++        int best = 0;
++        CapId best_id = CapId::Count;
++        bool all_blocked = true;
++        for (const Dependency& dep : def.deps) {
++          if (dep.kind != DepKind::AnyOf || dep.group != group) continue;
++          group_exists = true;
++          const CapabilityState& d = out[static_cast<std::size_t>(dep.id)];
++          if (d.state != Lifecycle::Blocked) all_blocked = false;
++          const int allowed = d.state == Lifecycle::Blocked ? 0 : contribution(dep);
++          if (allowed > best) {
++            best = allowed;
++            best_id = dep.id;
++          }
++        }
++        if (!group_exists) continue;
++        if (all_blocked) {
++          dependency_blocked = true;
++          blocking_dep = best_id;
++          break;
++        }
++        if (best < clamp) {
++          clamp = best;
++          clamped_by = best_id == CapId::Count ? clamped_by : best_id;
++        }
++      }
++    }
++
++    if (dependency_blocked) {
++      st.state = Lifecycle::Blocked;
++      st.blocker = BlockerCode::DependencyBlocked;
++      st.reason = std::string(DefOf(blocking_dep).display) + " is blocked";
++      continue;
++    }
++
++    const Lifecycle clamped = FromRank(std::min(Rank(ceiling), clamp));
++    st.state = clamped;
++    if (Rank(clamped) < Rank(ceiling)) {
++      st.clamped_by = clamped_by;
++      if (clamped_by != CapId::Count) {
++        st.reason = std::string("waiting for ") + std::string(DefOf(clamped_by).display);
++      }
++    } else if (st.reason.empty()) {
++      switch (clamped) {
++        case Lifecycle::Absent: st.reason = "not installed"; break;
++        case Lifecycle::Installed: st.reason = "installed but not loaded"; break;
++        case Lifecycle::Loaded: st.reason = "loaded but has not answered yet"; break;
++        case Lifecycle::Ready: st.reason = "ready but not configured for a job"; break;
++        case Lifecycle::Armed: st.reason = "configured and waiting for frames"; break;
++        case Lifecycle::Active: st.reason = "frames are being processed"; break;
++        default: break;
++      }
++    }
++  }
++
++  return out;
++}
++
++Snapshot MakeSnapshot(const CapabilityGraph& graph, Timestamp now) {
++  Snapshot snap;
++  snap.now = now;
++  snap.states = graph.resolve(now);
++  return snap;
++}
++
++}  // namespace emko::core
+diff --git a/v3/src/core/capability.hpp b/v3/src/core/capability.hpp
+new file mode 100644
+index 0000000..091b54a
+--- /dev/null
++++ b/v3/src/core/capability.hpp
+@@ -0,0 +1,190 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - core/capability.hpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ *
++ * The capability graph.
++ *
++ * This is the "Runtime-Orchestrator" from the product brief expressed as data
++ * rather than as nested if-statements:
++ *
++ *     Installed -> Loaded -> Ready -> Armed -> Active
++ *
++ * Every node carries its own evidence ledger and its dependencies. A node can
++ * never claim a livelier state than the things it stands on, and it can never
++ * claim Active without fresh, high-trust liveness proof. "The DLL exists" is
++ * therefore structurally incapable of producing an ACTIVE badge.
++ */
++
++#ifndef SECRETEMKO_CORE_CAPABILITY_HPP
++#define SECRETEMKO_CORE_CAPABILITY_HPP
++
++#include <array>
++#include <cstdint>
++#include <string>
++#include <string_view>
++#include <vector>
++
++#include "core/evidence.hpp"
++#include "core/time.hpp"
++
++namespace emko::core {
++
++// The user-facing status vocabulary, in ascending liveness order.
++// Blocked is deliberately outside the ladder: it is a known failure with a
++// reason, which is strictly more useful than silently sitting at a low rung.
++enum class Lifecycle : std::uint8_t {
++  Absent = 0,
++  Installed = 1,
++  Loaded = 2,
++  Ready = 3,
++  Armed = 4,
++  Active = 5,
++  Blocked = 6,
++};
++
++const char* ToString(Lifecycle state);
++const char* ToString(BlockerCode code);
++
++// Nodes of the graph. Fixed enum rather than dynamic registration: the shape of
++// the system is known at compile time, so the resolver needs no allocation and
++// a missing edge is a compile-time visible omission.
++enum class CapId : std::uint8_t {
++  // Host layer
++  ReShadeHost = 0,
++  EmkoControl,
++
++  // Neural rendering backend chain
++  RenoDxProvider,
++  RenoDxLiveControl,
++  // Two independent feature instances with their own temporal histories. The
++  // provider has to prove this; without it a second pass would share one
++  // history and feed it its own output.
++  ProviderMultiPass,
++  DlssSrRuntime,
++  DlssNrRuntime,
++  Bridge,
++  OpticalFlowMotion,
++
++  // Native GTA input provider and the individual render inputs it must supply
++  FgProvider,
++  ShaderMotion,
++  DepthInput,
++  // Knowing which draw the interface run starts at. A precondition for
++  // capturing the image without the interface in it, and a separate claim from
