@@ -24,13 +24,13 @@ That enables the Full Neural stack: ReShade Full Add-on Support, SECRET EMKO UI/
 
 ### RC3 control model
 
-SECRET EMKO is the intended single control surface. The verified RenoDX v4.70 settings page is removed from the ReShade settings UI while SECRET EMKO is active; DLSS 5 Bridge already has no separate ImGui settings page. The backend modules may still appear in ReShade's technical loaded-add-on inventory because they are genuinely loaded components.
+SECRET EMKO is the intended single control surface. The verified RenoDX v4.70 settings page is removed from the ReShade settings UI only after SECRET EMKO has successfully discovered and validated the live-control surface in the current session; if that proof fails, the original RenoDX page remains visible as a recovery fallback. DLSS 5 Bridge already has no separate ImGui settings page. The backend modules may still appear in ReShade's technical loaded-add-on inventory because they are genuinely loaded components.
 
 Supported RenoDX controls are applied live through the exact v4.70 provider's own settings callback and immediately read back for confirmation. This adapter is fail-closed: the v4.70 file size, SHA-256, code fingerprints and ImGui dispatch identity must all match. A newer/different RenoDX build is not guessed or memory-patched.
 
 Bridge controls are persisted to `dlss5-bridge.cfg`; upstream Bridge re-reads that file while the game is running, normally within about one second.
 
-Turning Neural Rendering off does not call `FreeLibrary` on third-party add-ons. Instead SECRET EMKO soft-disables the active pipeline and writes ReShade's official `DisabledAddons` configuration so `renodx-dlss5.addon64` and `dlss5-bridge.addon64` are not loaded at the next start. Turning Neural back on in a session where those backends were skipped schedules them for the next start and requires one restart.
+Turning Neural Rendering off does not call `FreeLibrary` on third-party add-ons. Runtime unloading is intentionally avoided because both backends install hooks/callback state that is safer to retire at process shutdown. Instead SECRET EMKO soft-disables the active pipeline and writes ReShade's official `DisabledAddons` configuration so `renodx-dlss5.addon64` and `dlss5-bridge.addon64` are not loaded at the next start. Turning Neural back on in a session where those backends were skipped schedules them for the next start and requires one restart.
 
 ## FiveM path and existing plugins
 
