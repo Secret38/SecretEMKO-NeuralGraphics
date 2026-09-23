@@ -998,7 +998,9 @@ void Attach() {
 }
 
 void Detach() {
-  g_live.restore_provider_overlay();
+  // Do not re-register the provider page during process teardown. ReShade is
+  // dismantling its own overlay at this point, and the next process start will
+  // reconstruct the full add-on registry from scratch.
   reshade::unregister_event<reshade::addon_event::reshade_overlay>(OnOverlayFrame);
   reshade::unregister_overlay(kProduct, DrawOverlay);
 }
