@@ -21,7 +21,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cat .source-patch/part-*.patchpart > "$RUNNER_TEMP/v3-source.patch"
+          cat .source-patch/current-*.patchpart > "$RUNNER_TEMP/v3-source.patch"
           git apply --check "$RUNNER_TEMP/v3-source.patch"
           git apply --index "$RUNNER_TEMP/v3-source.patch"
 
