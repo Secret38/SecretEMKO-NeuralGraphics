@@ -1,0 +1,316 @@
++Do I want more frames?            Off / 2x / 3x
++```
++
++Everything else — motion sources, depth conventions, HUD separation, optical-flow
++grids, bridge stages, Streamline tags, module load order, pacing, recovery — is the
++system's problem.
++
++That is not a request for fewer features. It is a request to move complexity from
++the person to the software, which is strictly harder than exposing it. This
++document is about how v3 carries that weight.
++
++---
++
++## What was wrong with v2
++
++v2 already believed all of the above. The user-facing design was right. What it
++lacked was a structure capable of keeping the promises the interface made.
++
++**The decision logic was 1,700 lines of mutable globals.** `ApplyGamingStyle`,
++`SetNeuralEnabled`, `ApplyNativeFrameGenPath`, `EnsureTemporalPolicy` and
++`ApplyCompatibilityMotionPath` each wrote configuration, set restart flags and
++mutated three shared integers. They called each other. In one path
++`EnsureTemporalPolicy` calls `ApplyCompatibilityMotionPath`, which sets
++`g_motion_path = 1`, and then the caller sets it back to `0`. The rules existed
++only as an emergent property of execution order. Nothing could be tested, and
++nothing could be explained to a user without re-deriving it.
++
++**The strength slider did not do what its label said.** The label read
++`0.00 = effect off | 1.00 = balanced | 2.00 = maximum`. The handler wrote the
++value into `g_nr.intensity` and nothing else. `global_tone`, `local_tone`,
++`local_structure` and `skin_structure` stayed at the look's fixed values at every
++slider position. At 0.00 the neural pass was still running, with four of its five
++parameters untouched.
++
++**ACTIVE could never go back down.** `RefreshBridgeRuntimeSnapshot` searched the
++bridge's log for `"frames delivered so far."`. Once that sentence had been written
++to the file it was there for the rest of the session, so the badge stayed green
++whether or not anything was still being delivered. The project's own stated
++principle —
++
++> ACTIVE bedeutet wirklich, dass Frames durch den betreffenden Pfad verarbeitet
++> werden.
++
++— was the exact thing the implementation could not do.
++
++**There was one source of truth, and it belonged to someone else.** Every claim
++about the neural path came from parsing a third-party log in a format we do not
++control.
++
++**Installation asked the user the hardest question first.** Two `.bat` files,
++`RP Visual` and `Full Neural`, presented before the player had any way to know
++which one their machine could run.
++
++v3 changes the structure, not the philosophy.
++
++---
++
++## The shape
++
++```
++        ┌─────────┐        ┌──────────────┐        ┌──────────┐
++ world →│ Probes  │──────→ │  Capability  │ ─────→ │ Planner  │
++        └─────────┘evidence│    graph     │snapshot└──────────┘
++                           └──────────────┘              │ plan
++                                  ▲                      ▼
++                                  │              ┌──────────────┐
++                                  └──────────────│  Effectors   │→ world
++                                     evidence    └──────────────┘
++                                                        │
++                                                        ▼
++                                                 ┌──────────────┐
++                                                 │  Status/UI   │
++                                                 └──────────────┘
++```
++
++Arrows point one way. Observation flows up, decisions flow down, and nothing in
++the middle reaches sideways. A probe cannot decide; an effector cannot decide;
++the interface cannot decide. There is exactly one function in the product that
++decides anything, and it is pure.
++
++| Layer | Knows about | Can it decide? |
++|---|---|---|
++| `core/` | nothing platform-specific | **yes — and only here** |
++| `probe/` | Windows, files, modules, logs | no |
++| `effect/` | Windows, ReShade config, providers | no |
++| `ui/` | ImGui | no |
++| `app/kernel` | the ports above | no — it sequences |
++
++`core/` compiles and its tests run on any machine, including a Linux CI container
++with no GPU and no Windows SDK. That is not a portability exercise; it is what
++makes 57 assertions about the product's actual rules possible.
++
++---
++
++## Evidence, and why status decays
++
++A capability's state is not stored. It is derived, every tick, from observations
++that expire.
++
++```cpp
++struct Evidence {
++  EvidenceKind kind;        // FilePresent < ModuleLoaded < ContractNegotiated
++                            //   < Configured < Liveness | Blocker
++  Confidence   confidence;  // Weak | Normal | Strong
++  Timestamp    observed_at;
++  Millis       ttl;         // Liveness: 2000 ms. Not optional.
++  BlockerCode  code;
++  std::string  detail;
++};
++```
++
++The ladder maps directly onto the status vocabulary:
++
++| Rung | Earned by | Means |
++|---|---|---|
++| `ABSENT` | nothing | not installed |
++| `INSTALLED` | the file is there, and matches its pin if it has one | it could be loaded |
++| `LOADED` | the module is mapped into this process | it is here |
++| `READY` | exports resolved, ABI matched, live control proven | it could work |
++| `ARMED` | configured for a job, inputs present | it is waiting for frames |
++| `ACTIVE` | **fresh** liveness evidence | frames are going through **now** |
++| `BLOCKED` | a blocker observation | known failure, with a reason |
++
++Two rules do the real work.
++
++**Liveness expires.** A frame counter that has not moved in two seconds is not
++evidence that frames are moving. No code has to remember to retract the claim;
++it simply stops being fresh, and the badge falls from `ACTIVE` to `ARMED` on its
++own. When delivery resumes it climbs back with no latch to clear and no restart.
++
++**Weak evidence cannot reach ACTIVE alone.** A sentence parsed out of a log we do
++not own is `Confidence::Weak`. On its own it caps the node at `ARMED`. It is only
++allowed to count once the same path also carries proof that *we configured it* —
++so a stray line in a foreign file is not a green badge, but a fresh line about a
++path we can show we set up is a real observation. The interface marks such a
++claim with `~`.
++
++```
++tests/test_capability.cpp
++  ok   active_decays_to_armed_when_liveness_goes_stale
++  ok   weak_liveness_alone_cannot_claim_active
++tests/test_planner.cpp
++  ok   a_present_file_alone_never_produces_an_active_badge
++  ok   the_badge_falls_back_on_its_own_when_delivery_stops
++```
++
++### First-party telemetry
++
++v3 adds a small shared block that SECRET EMKO's own components write into:
++monotonic counters, each with the timestamp of its last increment, plus the
++provider's status flags and a command channel back the other way (a seqlock, so
++the render thread reads it without locking).
++
++The log reader stays, demoted to one corroborating Weak source among several,
++and rewritten to read **incrementally** from the current session's attach banner
++rather than re-scanning 512 KB of tail every second.
++
++---
++
++## The dependency graph
++
++18 nodes, declared once as data, in topological order. Each edge says two things:
++what it depends on, and **how far that dependency has to climb before it stops
++holding this node back**.
++
++That second part is not a refinement, it is a correction. A passive runtime such
++as `nvngx_dlssnr.dll` is never loaded by us and never reports a frame — it is
++fully doing its job the moment it exists. Modelling it with the same rule as an
++active pipeline stage caps everything above it at `INSTALLED` forever. The tests
++caught this within minutes of the graph existing.
++
++```cpp
++Req(id)   // prerequisite: must reach READY
++File(id)  // passive artifact: presence on disk is the whole contribution
++Live(id)  // identity: this node is only as alive as that one
++Opt(id)   // enrichment: never clamps
++Any(id,g) // alternatives: the group clamps by its best member
++```
++
++The `AnyOf` group is how Neural Rendering accepts *either* motion source without
++that choice being hard-coded into the resolver. It blocks only when every
++alternative is blocked.
++
++---
++
++## Arbitration: the rules, stated once
++
++```cpp
++ArbitrationResult Arbitrate(const Intent&, const ArbitrationInput&);  // pure
++```
++
++Five booleans in, one result out, with a stable `RuleId` naming the branch that
++fired so the interface can explain itself and a bug report can name the exact
++decision.
++
++The substantive policy is unchanged from the brief:
++
++| Motion | Frames requested | Outcome |
++|---|---|---|
++| estimated (optical flow) | off | image pass runs — the normal path today |
++| estimated | 2x / 3x | **refused**; estimated motion is never a generator input |
++| geometry | off | image pass runs on the better input |
++| geometry, no shared contract | 2x / 3x | frames run, image pass suspended |
++| geometry, shared contract proven | 2x / 3x | both run together |
++
++The shared contract is a claim the input provider must make explicitly. Its
++absence means *not proven*, never *probably fine*.
++
++`tests/test_arbitration.cpp` sweeps all 32 input combinations against all 27
++intents — 864 cases — and asserts seven invariants over every one of them,
++including *generated frames never ride on estimated motion* and *the multiplier
++never exceeds what was asked for*.
++
++---
++
++## The look model
++
++Each parameter gets a three-point response curve:
++
++```
++strength 0.00  →  neutral     the value at which this parameter does nothing
++strength 1.00  →  reference   the look exactly as it was tuned
++strength 2.00  →  ceiling     the strongest value still considered sane
++```
++
++Piecewise-linear through those anchors. The tuned look sits at the middle of the
++slider, and both ends mean what the label says. Note that `neutral` is per
++parameter — `0.0` for intensity and structure, `1.0` for the tone multipliers.
++
++At strength `0.00` the planner does not merely pass neutral values down; it marks
++the pass as not granted at all, so nothing is loaded and the badge reads `OFF`
++rather than dressing up an idle pipeline as a running one.
++
++Three looks remain three parameter sets on one proven model. v3 does not claim
++three neural networks, because there are not three.
++
++---
++
++## Intent: seven fields
++
++```cpp
++struct Intent {
++  Look          look;              // Natural | Cinematic | Detail
++  float         strength;          // 0.00 – 2.00
++  FrameGen      frame_gen;         // Off | X2 | X3
++  BaseFpsMode   base_fps_mode;     // Automatic | Manual
++  int           base_fps_manual;
++  HudProtection hud;               // Automatic | Strict | Off
++  bool          auto_pause;
++};
++```
++
++Nothing in it names an implementation. The entire backend can be replaced without
++migrating a saved setting — which is the actual test of whether the abstraction
++is real.
++
++A v2 installation migrates once on first read. The three-look selection, the
++strength value (rescaled from the provider's raw intensity to the normalised
++slider) and the frame-generation choice all carry over. The dozens of v2 provider
++keys are left where they are; v3 derives them.
++
++A refused choice is **remembered, not rewritten**. Selecting 3x on a machine that
++cannot do it yet stores 3x, reports `LOCKED`, and starts working the day the
++inputs are proven.
++
++---
++
++## The kernel
++
++```cpp
++void Kernel::tick(Timestamp now) {
++  run_probes(now);                                   // read the world
++  snapshot_ = MakeSnapshot(graph_, now);             // let it expire and resolve
++  plan_     = MakePlan(intent_, snapshot_, facts_);  // decide — pure
++  apply_plan(now, force);                            // only where it differs
++  status_   = MakeStatus(snapshot_, plan_);          // project for the screen
++}
++```
++
++Every rung is re-derived from scratch. The only things that survive a tick are
++Intent (the user owns it), the evidence ledgers (they expire on their own) and
++what each effector last applied (so it can stay idempotent).
++
++There is no `g_restart_required` to get stuck, no `g_policy_synced` latch to
++forget, and no ordering between helpers that a reader has to reconstruct. The
++restart notice is recomputed every tick from the gap between what the plan needs
++and what is actually mapped into the process, so it disappears by itself.
++
++Effectors only run when the applied part of the plan actually changed — a plan
++recomputed sixty times a second must not become sixty configuration writes.
++
++### Effectors are honest about what they achieved
++
++```cpp
++enum class ApplyResult { Unchanged, Applied, Deferred, Rejected };
++```
++
++`Deferred` is a first-class outcome. Plenty of changes genuinely cannot take
++effect until the next process start, and the interface says so where the change
++was made rather than burying it on a diagnostics page.
++
++Modules are still never unloaded mid-session. They install hooks and own device
++state; tearing that down under a live frame is a worse failure than leaving an
++idle module mapped. v3 keeps v2's correct instinct here: idle it now, keep it out
++of the next start.
++
++---
++
++## The input provider: what it actually does
++
++Frame generation needs six things the game does not expose. The provider does not
++have them yet, and v3 does not pretend otherwise. What it does do:
++
++1. **Discovery that accumulates.** Shader classification (which shaders draw with
++   depth bound, which never do) is written to a candidate file and reloaded next
++   session. v2 discarded this at every exit. A classification that survives
