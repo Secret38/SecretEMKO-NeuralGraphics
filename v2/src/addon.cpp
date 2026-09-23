@@ -15,12 +15,14 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cwctype>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <utility>
 
 #include <deps/imgui/imgui.h>
 #include <include/reshade.hpp>
