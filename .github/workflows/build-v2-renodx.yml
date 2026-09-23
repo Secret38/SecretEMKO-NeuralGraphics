@@ -198,7 +198,7 @@ jobs:
       - name: Verify release files
         shell: powershell
         run: |
-          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3"
+          $stage = ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc4"
           $required = @(
             "SecretEMKO.addon64",
             "dlss5-bridge.addon64",
@@ -224,10 +224,28 @@ jobs:
           Get-FileHash "$stage\SecretEMKO.addon64" -Algorithm SHA256
           Get-FileHash "$stage\dlss5-bridge.addon64" -Algorithm SHA256
 
+          $versions = Get-Content ".\v2\VERSIONS.json" -Raw | ConvertFrom-Json
+          if ($versions.version -ne "2.0.0-rc4") { throw "VERSIONS.json is not RC4" }
+          if ($versions.components.dlss5_bridge.version -ne "1.4.13-pre8") { throw "Wrong bridge version" }
+          $expectedBridge = "C4C8B5BC4B26B2B3F3BF2767CDB708546D62F7D0BBB63D24E940C736DA9EFE26"
+          $actualBridge = (Get-FileHash "$stage\dlss5-bridge.addon64" -Algorithm SHA256).Hash
+          if ($actualBridge -ine $expectedBridge) { throw "Packaged bridge hash mismatch: $actualBridge" }
+
+          $addonSource = Get-Content ".\v2\src\addon.cpp" -Raw
+          foreach ($requiredMarker in @(
+            "PrepareSyntheticSrRuntime",
+            "LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR",
+            "CreateHardLinkW",
+            "RefreshBridgeRuntimeSnapshot",
+            "Core stack %.0f%% installed"
+          )) {
+            if (-not $addonSource.Contains($requiredMarker)) { throw "RC4 runtime marker missing: $requiredMarker" }
+          }
+
       - name: End-to-end Full Neural state persistence test
         shell: powershell
         run: |
-          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3").Path
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc4").Path
           $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Full Neural Persistence Test"
           $app = Join-Path $fake "FiveM.app"
           New-Item -ItemType Directory -Path $app -Force | Out-Null
@@ -280,7 +298,7 @@ jobs:
       - name: End-to-end RP Visual isolation and restore test
         shell: powershell
         run: |
-          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3").Path
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc4").Path
           $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO FiveM Legacy Test"
           $app = Join-Path $fake "FiveM.app"
           $oldPlugins = Join-Path $app "plugins"
@@ -324,7 +342,7 @@ jobs:
       - name: End-to-end missing plugins creation test
         shell: powershell
         run: |
-          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3").Path
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc4").Path
           $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Missing Plugins Test"
           $app = Join-Path $fake "FiveM.app"
           New-Item -ItemType Directory -Path $app -Force | Out-Null
@@ -346,7 +364,7 @@ jobs:
       - name: Reject unsupported Full Neural hardware before modification
         shell: powershell
         run: |
-          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc3").Path
+          $stage = (Resolve-Path ".\v2\dist\SecretEMKO-NeuralGraphics-v2.0.0-rc4").Path
           $fake = Join-Path $env:RUNNER_TEMP "SecretEMKO Unsupported Neural Test"
           $app = Join-Path $fake "FiveM.app"
           $plugins = Join-Path $app "plugins"
@@ -368,8 +386,8 @@ jobs:
       - name: Upload v2 package
         uses: actions/upload-artifact@v4
         with:
-          name: SecretEMKO-NeuralGraphics-v2.0.0-rc3
+          name: SecretEMKO-NeuralGraphics-v2.0.0-rc4
           path: |
-            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc3/**
-            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc3.zip
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc4/**
+            v2/dist/SecretEMKO-NeuralGraphics-v2.0.0-rc4.zip
           if-no-files-found: error
