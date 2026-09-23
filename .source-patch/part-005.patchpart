@@ -1,0 +1,292 @@
++| Interface (ImGui) | Written, unrun |
++| Camera detector in the draw path, SEH-guarded read | Written, unrun |
++| HUD-less capture | Written, unrun |
++| Video memory reader (DXGI) | Written, unrun |
++| Draw observation feeding the segmenter | Written, unrun |
++| Installer and uninstaller | Written, unrun |
++| Crash guard and subsystem switches | Written, unrun |
++| Diagnostic report on the clipboard | Written, unrun |
++
++The compute shaders are now compiled by `tools/build.ps1` with `/WX`, so a
++shader that does not compile fails the build rather than becoming a pass that
++silently does nothing. That check verifies syntax and bindings. It cannot verify
++that the arithmetic still matches the C++ it was transcribed from.
++
++---
++
++## Not built
++
++These are the things between here and "everything", with what each actually
++requires. None of them are small, and none of them can be written responsibly
++without a machine to run them on.
++
++### 1. The compute scaffold
++
++Pipeline layouts, compute pipelines, descriptor binding, dispatch, and the
++resource lifetimes around them. The overlay mask needs it, the composite needs
++it, and the native backend needs the same one.
++
++**Why it is not written blind.** The syntax check has been worth having because
++the stubs mirror an API that was understood correctly. For the dispatch path
++that is not true — writing both the code and the stub from the same uncertain
++memory produces a check that validates a guess against itself. That is worse
++than no check, because it reads like verification. This needs the real headers
++in front of it.
++
++**Needs:** Windows, the ReShade SDK, one run.
++
++### 2. The calibration screen — built
++
++A Materials tab over `needs_calibration()`, appearing only when there is
++something to answer, and the provider's side of the exchange: it writes what it
++has seen every few seconds and takes back whatever was answered.
++
++One honest gap, recorded where it matters rather than buried: ReShade's draw
++event does not carry the blend state, and blending is what separates a
++transparent surface from an opaque one. So the provider passes `blended` as
++false and the Transparent class is never derived — glass and foliage are simply
++not offered for calibration yet, rather than being offered on the strength of a
++signal we do not have. Subjects are unaffected; they are found by depth and
++presence, both of which are observed.
++
++**Still unrun**, like the rest of the Windows layer.
++
++### 3. Jitter and the game's TAA
++
++Driving the projection offset per frame, and turning off the game's own temporal
++antialiasing. Without both, render scale 1.00 gives no antialiasing benefit and
++anything below 1.00 is not reconstruction, it is a blur.
++
++**Needs:** the camera constant buffer to be writable, not just readable. The
++detector already finds it; writing to it is a different risk class.
++
++### 4. The native backend, first form
++
++NGX directly, one feature handle, the image pass only, at render scale 1.00.
++This is what turns `backend.hpp` from an interface into a choice.
++
++**Needs:** the NVIDIA NGX SDK, an RTX card, and the compute scaffold.
++
++### 5. The second feature handle
++
++Makes the two-pass dial and the per-material control mask real rather than
++composited. Small once (4) exists — it is one more handle.
++
++### 6. D3D11 ↔ D3D12 interop, DLSS-G, Reflex
++
++The largest single piece, and deliberately last because it can destabilise
++everything before it. Frame generation is D3D12-only; the game is D3D11.
++
++**Needs:** (4), plus a repro harness, plus real measurement. Reflex is not
++optional alongside generation — without it the held frame lands on an already
++queued present and the input lag roughly doubles.
++
++### 7. Per-object motion vectors
++
++Shader injection, so that things moving under their own power — traffic,
++pedestrians — are described correctly rather than by the camera layer. Until
++this exists, `MayDriveFrameGeneration()` is false for every source the system
++can obtain, and that is enforced in code rather than remembered.
++
++---
++
++## The honest summary
++
++The half of this product where mistakes are invisible is finished and checked.
++The half where mistakes are visible is written and unrun, and the largest pieces
++of it are not written at all.
++
++Two things follow, and they are the actual answer to "is it done":
++
++**Nothing here will be finished by more writing.** Every remaining item is
++gated on a machine — Windows, an RTX card, the SDKs, and the game. The next real
++progress is a first run, not a next file. A first run will find things, and
++finding them is the point.
++
++**Nothing claims otherwise in the meantime.** Every unbuilt piece is a
++capability that cannot reach ACTIVE, the interface says which of them is
++missing and why, and the product with all of it switched off behaves exactly as
++it did before any of it was written. That property has been maintained
++deliberately at every step, and it is what makes shipping an unfinished thing
++honest rather than reckless.
++
++The version number goes up when something is built. It does not go up when
++something is claimed.
++
++---
++
++## A review pass before the first run
++
++Written code that has never executed gets one thing that running code gets for
++free: someone reading it again, on purpose, looking for the failure rather than
++for the feature. This is what that found.
++
++**A texture leaked when the device changed.** `HudlessCapture::release` took the
++caller's device and skipped the free when it did not match the one that had
++created the texture — which is precisely the case it existed to handle, so a
++resolution change on a second device leaked. It now frees through the owner
++always, and the device-destroyed path is what covers an owner that is gone.
++
++**A comment could parse as an assignment.** The calibration file's reader
++dropped the `#` token and then read the words after it, so `# 0000000000002222
++skin` in a comment was an assignment. The file this product writes is six lines
++of explanation followed by data, so that is not a corner case. A comment is now
++the whole line from the first `#`, with a test that the written file does not
++parse its own header as data.
++
++**The catalogue re-derived every frame.** Walking a few thousand shaders on the
++present thread, at frame rate, to reach an answer that moves over minutes. That
++is the kind of cost that never shows up in a profile as one expensive thing and
++does show up as a frame time slightly worse than it was. Throttled to once a
++second, which is still more often than the input can change.
++
++**The capture was gated on the wrong thing.** It compared a draw index against a
++record that could be switched off underneath it. It happened to be safe — the
++arithmetic could not collide — but relying on that is not the same as saying it,
++so it is now gated on the record as well as on itself.
++
++**Four headers arrived transitively.** `<cctype>`, `<cstdlib>`, `<string>`,
++`<string_view>` were reached through other includes on the check toolchain.
++That is the classic way code compiles on one compiler and not the next, and
++MSVC is the next one.
++
++None of these would have been found by the type checker, and three of them would
++have been found by the first run in the worst possible way: as a memory leak
++nobody could explain, a calibration that silently applied the wrong thing, and a
++frame time that got slightly worse for no visible reason.
+diff --git a/v3/docs/FIRST-RUN.md b/v3/docs/FIRST-RUN.md
+new file mode 100644
+index 0000000..eb6d946
+--- /dev/null
++++ b/v3/docs/FIRST-RUN.md
+@@ -0,0 +1,135 @@
++# The first run
++
++The portable decision layer is heavily tested and the Windows add-ons are built in CI, but a real FiveM/GPU session is still the validation that matters. This document turns a player test from "it didn't work" into useful evidence.
++
++Read it before starting the game, not after.
++
++## Before anything
++
++Copy the whole folder somewhere you can delete. Nothing here modifies the game's
++own files, and `UNINSTALL.bat` replays the install journal backwards — but a
++first run is a first run.
++
++Use only the successful GitHub Actions player artifact. CI runs the 298 core checks, type-checks the Windows layer, compiles every compute shader with `/WX`, builds both add-ons with MSVC, verifies export markers, and exercises the installer/uninstaller against a disposable FiveM layout.
++
++## What should happen, in order
++
++Each of these is a separate mechanism that can fail on its own. Check them in
++this order, because each depends on the ones above it.
++
++**1. The overlay appears.** ReShade's menu has a SECRET EMKO page. If not, the
++add-on did not load: check ReShade's own log for the add-on name.
++
++**2. The header shows two badges.** IMAGE and FRAMES. Both showing something
++other than ACTIVE is correct on a first run.
++
++**3. The Status page lists capabilities with reasons.** Every line that is not
++ACTIVE should say *why* in a sentence. A line with no reason is a bug in this
++product, not in your setup — that is exactly what the evidence model exists to
++prevent, and it is worth reporting.
++
++**4. Frames still arrive.** The base-rate limiter and the draw observation both
++run in the render path. If the game is slower than it was with nothing
++installed, stop here and say so — that is the most important single finding a
++first run can produce.
++
++**5. The camera locks.** Advanced page, after a minute of driving around. It
++searches by behaviour and reports `searching` → `settling` → `locked`. Locking
++on a menu screen and never letting go would be a bug; losing the lock when a
++cutscene starts is correct.
++
++**6. Frame segmentation locks.** Also a minute or so. `FrameSegmentation`
++reaching READY means the system found where the interface starts. It needs the
++frame to hold still for 30 frames, and drops it after 6 that disagree.
++
++**7. The HUD-less copy runs.** `HUD-less image` reaching ACTIVE means a texture
++copy is happening every frame, immediately before the first interface draw. If
++it goes to ACTIVE and back repeatedly, the boundary is not stable — worth
++reporting with a note about what was on screen.
++
++**8. A Materials tab appears.** Only once there is something to answer. It lists
++the busiest draws it could not identify, most-drawn first.
++
++## What to expect to be off
++
++These are not faults. Each is a capability with no evidence behind it yet:
++
++- Frame generation cannot reach ACTIVE. Per-object motion vectors do not exist,
++  and the arbitration layer refuses generation without them, in code.
++- The two-pass dial does nothing. No provider here exposes two feature instances.
++- The overlay mask and composite do not run. Their models are written and tested;
++  nothing dispatches them yet.
++- Render scale below 1.00 is not reconstruction. Jitter is not driven.
++
++If any of these *does* claim to work, that is the serious kind of bug — the
++product's core promise is that a status word means what it says.
++
++## If it crashes, it handles the next start itself
++
++A marker file is written when the add-on starts and removed when it shuts down
++cleanly. Finding one at the next startup means the previous session never got
++that far.
++
++The response is graded, because one unclean exit is weak evidence — games crash
++on their own, and so do drivers:
++
++| | |
++|---|---|
++| **One** | The scene copy stands down. It is the only mechanism that allocates a texture and writes into the live frame. Everything else keeps running. |
++| **Two in a row** | Everything experimental is off and the picture is exactly what the game renders. |
++
++Both say so on screen, with what clears them. The counter resets once a session
++has run ninety seconds, so a crash after five minutes counts as the first rather
++than the next — one bad afternoon cannot leave you permanently in safe mode.
++
++The base-rate cap is never taken away by this. It is not experimental, and
++removing it would change how the game feels for a reason that has nothing to do
++with it.
++
++`SecretEMKO.running` beside the add-on is the marker. Deleting it by hand is a
++supported way out.
++
++## Narrowing it yourself
++
++The Advanced page lists every mechanism that runs inside the render path, each
++with a switch and a line saying what turning it off costs. Switching one off and
++trying again is worth far more than a report that says it crashed — it turns
++eight suspects into one.
++
++The guard only ever narrows. Something you switched off stays off through a
++clean startup; it will not be quietly switched back on.
++
++## If it crashes
++
++Three places are most likely, in this order, and each names itself in the log:
++
++**The camera detector**, reading a constant buffer at unmap. It copies through
++a structured-exception guard before anything downstream sees the bytes, so a
++crash here would mean the guard is not covering what it should.
++
++**The HUD-less capture**, the only code that allocates a texture and issues a
++copy. It disables itself for the session on the first failure rather than
++retrying, and logs the reason with the prefix `SECRET EMKO FG:`.
++
++**The draw observation**, which runs on every draw call. It allocates nothing
++per draw and caps at 8192 draws per frame.
++
++`SecretEMKO.log` sits beside the add-on and carries every status transition with
++a timestamp. ReShade's own log carries anything logged before ours opened.
++
++## What is worth sending back
++
++In rough order of value:
++
++1. **A performance regression.** Numbers before and after, same scene.
++2. **A status line with no reason**, or a status word that overstates what is
++   happening.
++3. **A crash**, with `SecretEMKO.log` and ReShade's log.
++4. **`SecretEMKO-Materials.observed.txt`** after ten minutes of ordinary play.
++   That file is the raw material for a shipped catalogue, and one person's is
++   enough for everyone on the same game build.
