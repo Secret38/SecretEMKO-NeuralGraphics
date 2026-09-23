@@ -125,6 +125,37 @@ jobs:
             throw "RenoDX live-control binary changed: $hash"
           }
 
+          $bytes = [IO.File]::ReadAllBytes($consumer.FullName)
+          function Assert-Bytes([int]$Offset, [byte[]]$Expected, [string]$Name) {
+            for ($i = 0; $i -lt $Expected.Length; $i++) {
+              if ($bytes[$Offset + $i] -ne $Expected[$i]) {
+                throw "$Name fingerprint mismatch at 0x$('{0:X}' -f ($Offset + $i))"
+              }
+            }
+          }
+          Assert-Bytes 0x23ff8 ([byte[]](0xB9,0x32,0x4B,0x00,0x00,0x00,0xFF,0xD0,0x48,0x89,0x05,0x9A,0x2C,0x17,0x00)) "RenoDX init"
+          Assert-Bytes 0x2607c ([byte[]](0x48,0x8D,0x15,0x7D,0x45,0x00,0x00,0xFF,0xD0)) "RenoDX settings callback"
+
+          $ascii = [Text.Encoding]::ASCII.GetString($bytes)
+          foreach ($requiredString in @(
+            "RenoDX-DLSSNR",
+            "Enable DLSS Neural Rendering",
+            "Overall Intensity",
+            "Global Tone Intensity",
+            "Local Tone Intensity",
+            "Structure Intensity",
+            "Character/Skin Structure",
+            "Automatic / Character Mask",
+            "NR UI Correction",
+            "NR Preset",
+            "NR Style",
+            "Depth Convention"
+          )) {
+            if (-not $ascii.Contains($requiredString)) {
+              throw "Pinned RenoDX binary is missing live-control contract string: $requiredString"
+            }
+          }
+
       - name: Build RenoDX-native addon and package
         shell: powershell
         run: |
