@@ -37,6 +37,11 @@ Copy-Item (Join-Path $RepoRoot "src\addon.cpp") (Join-Path $addonDir "addon.cpp"
 Copy-Item (Join-Path $RepoRoot "src\renodx_live_adapter.hpp") (Join-Path $addonDir "renodx_live_adapter.hpp") -Force
 Copy-Item (Join-Path $RepoRoot "src\metadata.json") (Join-Path $addonDir "metadata.json") -Force
 
+$fgAddonDir = Join-Path $src "src\addons\secretemkofg"
+New-Item -ItemType Directory -Path $fgAddonDir -Force | Out-Null
+Copy-Item (Join-Path $RepoRoot "src\fg_provider.cpp") (Join-Path $fgAddonDir "addon.cpp") -Force
+Copy-Item (Join-Path $RepoRoot "src\fg_metadata.json") (Join-Path $fgAddonDir "metadata.json") -Force
+
 Write-Host "Preparing RenoDX shader toolchain..."
 Push-Location $src
 try {
@@ -52,8 +57,14 @@ if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
 & cmake --build $buildDir --config Release --target secretemko --parallel 2
 if ($LASTEXITCODE -ne 0) { throw "Secret EMKO add-on build failed" }
 
+& cmake --build $buildDir --config Release --target secretemkofg --parallel 2
+if ($LASTEXITCODE -ne 0) { throw "Secret EMKO FG provider build failed" }
+
 $built = Get-ChildItem -LiteralPath $buildDir -Recurse -File -Filter "renodx-secretemko.addon64" | Select-Object -First 1
 if (-not $built) { throw "renodx-secretemko.addon64 not found after build" }
+
+$fgBuilt = Get-ChildItem -LiteralPath $buildDir -Recurse -File -Filter "renodx-secretemkofg.addon64" | Select-Object -First 1
+if (-not $fgBuilt) { throw "renodx-secretemkofg.addon64 not found after build" }
 
 $distRoot = Join-Path $RepoRoot "dist"
 $stage = Join-Path $distRoot "SecretEMKO-NeuralGraphics-v2.0.0-rc5"
@@ -67,6 +78,7 @@ New-Item -ItemType Directory -Path (Join-Path $stage "licenses") -Force | Out-Nu
 New-Item -ItemType Directory -Path (Join-Path $stage "presets") -Force | Out-Null
 
 Copy-Item $built.FullName (Join-Path $stage "SecretEMKO.addon64") -Force
+Copy-Item $fgBuilt.FullName (Join-Path $stage "SecretEMKO-FG.addon64") -Force
 
 # Verify the ReShade AddonInit/AddOnUninit lifecycle markers are present in the
 # compiled PE before packaging. __declspec(dllexport) causes these names to be
@@ -80,6 +92,15 @@ foreach ($symbol in @("AddonInit","AddonUninit","NAME","DESCRIPTION")) {
     }
 }
 Write-Host "SECRET EMKO AddonInit lifecycle markers verified"
+
+$fgAddonPath = Join-Path $stage "SecretEMKO-FG.addon64"
+$fgAscii = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($fgAddonPath))
+foreach ($symbol in @("AddonInit","AddonUninit","NAME","DESCRIPTION","SecretEMKO_FG_GetStatus","SECRET_EMKO_FG_ABI")) {
+    if (-not $fgAscii.Contains($symbol)) {
+        throw "Compiled SECRET EMKO FG provider is missing export marker: $symbol"
+    }
+}
+Write-Host "SECRET EMKO FG discovery-provider exports verified"
 
 $bridge = Join-Path $WorkDir "dlss5-bridge.addon64"
 Invoke-WebRequest -UseBasicParsing -Uri $BridgeUrl -OutFile $bridge
@@ -133,6 +154,8 @@ $manifest = [ordered]@{
     renodx_dlss5_live_compatible_sha256 = "D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C8593952"
     live_adapter_provenance = "Derived from MIT DLSS5-Swapper v4.7 UI bridge, commit 24bd2aca7a7451ce94e564366381e33cac9dcdba"
     addon_sha256 = (Get-FileHash -LiteralPath (Join-Path $stage "SecretEMKO.addon64") -Algorithm SHA256).Hash
+    fg_provider_sha256 = (Get-FileHash -LiteralPath (Join-Path $stage "SecretEMKO-FG.addon64") -Algorithm SHA256).Hash
+    fg_provider_state = "discovery foundation; fail-closed until native motion/HUD inputs are verified"
 }
 $manifest | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $stage "BUILD-MANIFEST.json") -Encoding UTF8
 
