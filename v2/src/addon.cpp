@@ -87,25 +87,23 @@ struct Profile {
   float local_tone;
   float local_structure;
   float skin_structure;
-  float transfer_strength;
-  float color_strength;
   int ofa_grid;
   int ofa_perf;
 };
 
 constexpr std::array<Profile, 6> kProfiles = {{
     {"Natural", "Very restrained neural reconstruction. Best first compatibility check.",
-     1, 0.90f, 1.00f, 0.85f, 0.85f, 0.75f, 1.00f, 0.88f, 2, 20},
+     1, 0.90f, 1.00f, 0.85f, 0.85f, 0.75f, 2, 20},
     {"Clean", "Low-artifact presentation with reduced structure emphasis.",
-     0, 0.82f, 0.95f, 0.75f, 0.70f, 0.60f, 0.95f, 0.82f, 2, 20},
+     0, 0.82f, 0.95f, 0.75f, 0.70f, 0.60f, 2, 20},
     {"Detail", "Sharper surfaces and micro-structure without pushing the model to the limit.",
-     1, 1.08f, 1.02f, 0.95f, 1.28f, 0.95f, 1.00f, 0.92f, 2, 10},
-    {"Enhanced", "Recommended quality-first profile for 3440x1440-class RTX 50 systems.",
-     1, 1.20f, 1.05f, 1.05f, 1.35f, 1.00f, 1.00f, 0.95f, 2, 10},
+     1, 1.08f, 1.02f, 0.95f, 1.28f, 0.95f, 2, 10},
+    {"Enhanced", "Recommended quality-first daily profile. All profile-controlled RenoDX values apply live.",
+     1, 1.20f, 1.05f, 1.05f, 1.35f, 1.00f, 2, 10},
     {"Cinematic", "Softer structure with stronger tonal shaping. Uses Natural model style for stability.",
-     1, 1.12f, 1.18f, 1.28f, 1.08f, 0.90f, 1.00f, 0.90f, 2, 10},
+     1, 1.12f, 1.18f, 1.28f, 1.08f, 0.90f, 2, 10},
     {"Ultra Detail", "Aggressive detail profile. Inspect foliage, wires and faces for temporal artifacts.",
-     1, 1.34f, 1.10f, 1.12f, 1.68f, 1.00f, 1.00f, 1.00f, 1, 5},
+     1, 1.34f, 1.10f, 1.12f, 1.68f, 1.00f, 1, 5},
 }};
 
 NeuralSettings g_nr;
@@ -450,8 +448,8 @@ void ApplyProfile(int index) {
   g_nr.local_tone = p.local_tone;
   g_nr.local_structure = p.local_structure;
   g_nr.skin_structure = p.skin_structure;
-  g_nr.transfer_strength = p.transfer_strength;
-  g_nr.color_strength = p.color_strength;
+  // Profiles only touch values covered by the verified v4.70 live-control
+  // surface. Restart-only compatibility values keep the user's saved state.
   g_nr.enabled = 1;
   g_nr.enable_upscaling = 0;
   g_nr.preset = 0;
@@ -764,12 +762,8 @@ void DrawQuality() {
     return;
   }
   bool changed = false;
-  ImGui::SeparatorText("Colour bridge");
-  changed |= Slider("Transfer Strength", &g_nr.transfer_strength, 0.0f, 1.0f, "Legacy colour-transfer strength retained by v4.7. 1.0 preserves the full bridge response.");
-  changed |= Slider("Colour Strength", &g_nr.color_strength, 0.0f, 1.0f, "Chroma contribution. Enhanced uses 0.95 to avoid oversaturated fine detail.");
-
-  changed |= Slider("Scene Paper-White Scale", &g_nr.paper_white_scale, 0.25f, 4.0f, "Use 1.0 for FiveM SDR. This exists mainly for HDR contracts.");
-  changed |= Slider("Diffuse White", &g_nr.diffuse_white_nits, 80.0f, 500.0f, "v4.7 HDR diffuse-white reference. It is effectively informational for a normal SDR FiveM contract.", "%.0f nits");
+  ImGui::SeparatorText("Live quality controls");
+  changed |= Slider("Diffuse White", &g_nr.diffuse_white_nits, 80.0f, 500.0f, "v4.7 diffuse-white control. This value is part of the verified live RenoDX callback surface.", "%.0f nits");
 
   ImGui::Spacing();
   ImGui::SeparatorText("Geometry guidance");
@@ -790,6 +784,17 @@ void DrawQuality() {
   if (g_nr.enable_upscaling) ImGui::TextWrapped("Not recommended for the current FiveM synthetic path.");
 
   if (changed) WriteNeuralSettings();
+
+  ImGui::Spacing();
+  if (ImGui::TreeNode("Advanced provider compatibility (restart required)")) {
+    ImGui::TextWrapped("These three legacy/provider values are persisted, but the verified RenoDX v4.70 settings callback does not expose them. SECRET EMKO therefore never labels them as live.");
+    bool restart_changed = false;
+    restart_changed |= Slider("Transfer Strength", &g_nr.transfer_strength, 0.0f, 1.0f, "Persisted provider compatibility value. Requires provider recreation/restart in RC3.");
+    restart_changed |= Slider("Colour Strength", &g_nr.color_strength, 0.0f, 1.0f, "Persisted provider compatibility value. Requires provider recreation/restart in RC3.");
+    restart_changed |= Slider("Scene Paper-White Scale", &g_nr.paper_white_scale, 0.25f, 4.0f, "Persisted HDR compatibility value. Requires provider recreation/restart in RC3.");
+    if (restart_changed) WriteNeuralSettings();
+    ImGui::TreePop();
+  }
 
   ImGui::Spacing();
   ImGui::SeparatorText("Quality methodology");
