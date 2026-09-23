@@ -1265,9 +1265,9 @@ void DrawQuality() {
 
 void DrawMotionPolicy() {
   ImGui::SeparatorText("Temporal input policy");
-  ImGui::TextWrapped("Compatibility Optical Flow and native Frame Generation are mutually exclusive. Native geometry motion is the path that can eventually feed both Neural Rendering and Frame Generation.");
+  ImGui::TextWrapped("Compatibility Optical Flow and native Frame Generation are mutually exclusive. GTA shader motion is the path that can eventually feed both Neural Rendering and Frame Generation.");
 
-  const char* modes[] = {"Auto (recommended)", "Compatibility motion (NR only)", "Native GTA motion"};
+  const char* modes[] = {"Auto (recommended)", "Compatibility motion (NR only)", "GTA shader motion"};
   int requested = g_motion_path;
   ImGui::SetNextItemWidth(320.0f);
   if (ImGui::Combo("Motion / FG input", &requested, modes, IM_ARRAYSIZE(modes))) {
@@ -1290,7 +1290,7 @@ void DrawMotionPolicy() {
   }
 
   if (g_motion_path == 2 && !NativeMotionReady())
-    ImGui::TextWrapped("Native GTA motion is not ready yet; SECRET EMKO keeps Frame Generation locked.");
+    ImGui::TextWrapped("GTA shader motion is not ready yet; SECRET EMKO keeps Frame Generation locked.");
   else if (g_motion_path == 1)
     ImGui::TextDisabled("Compatibility mode: NVIDIA Optical Flow may feed synthetic NR; Frame Generation is forced off.");
   else
@@ -1375,12 +1375,12 @@ void DrawFrameGeneration() {
   FgProviderStatusV1 provider_status{};
   const bool provider_status_ok = QueryFrameGenProvider(provider_status);
   if (!ready) {
-    ImGui::TextWrapped("Locked until native GTA motion, depth, HUD-less colour and UI inputs are all verified.");
+    ImGui::TextWrapped("Locked until GTA shader motion, depth, HUD-less colour and UI inputs are all verified.");
     ImGui::TextDisabled("Runtime: %s  |  Provider: %s",
                         runtime ? "ready" : "missing",
                         provider ? (loaded ? "discovery" : "restart required") : "missing");
     if (provider_status_ok) {
-      ImGui::TextDisabled("Discovery: D3D11 %s / depth %s / render targets %s / native motion %s",
+      ImGui::TextDisabled("Discovery: D3D11 %s / depth %s / render targets %s / shader motion %s",
                           (provider_status.flags & kFgD3D11Observed) ? "yes" : "no",
                           (provider_status.flags & kFgDepthObserved) ? "yes" : "no",
                           (provider_status.flags & kFgRenderTargetSeen) ? "yes" : "no",
@@ -1404,7 +1404,7 @@ void DrawFrameGeneration() {
   if (g_fg_policy == 0)
     ImGui::TextDisabled("Input path: Compatibility motion for Neural Rendering");
   else
-    ImGui::TextDisabled("Input path: Native GTA motion + depth + HUD separation");
+    ImGui::TextDisabled("Input path: GTA shader motion + depth + HUD separation");
 
   ImGui::Spacing();
   bool auto_base = g_fg_auto_base_fps != 0;
