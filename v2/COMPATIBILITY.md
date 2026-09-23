@@ -78,3 +78,12 @@ When Neural Rendering is disabled in SECRET EMKO, the active bridge is switched 
 When Neural Rendering is enabled again while the backends are still loaded, supported values apply live. If they were skipped at process start, SECRET EMKO removes the disable markers and asks for one restart so ReShade can load them normally.
 
 The RenoDX live-control adapter is restricted to the exact v4.70 consumer, SHA-256 `D5ADF82EB44B065F4C590AC91FE824BAB07AFEA0EB9F994BDE936710C8593952`, and validates code fingerprints before use. Different builds fall back to persistent configuration/restart behavior rather than unsafe guessed offsets.
+
+
+### UI fail-safe
+
+SECRET EMKO hides the RenoDX settings page only after the exact pinned provider has passed hash/fingerprint checks and one hidden discovery invocation has exposed the expected controls. If live control cannot be proven, the RenoDX page remains available rather than leaving the user with no backend controls.
+
+### Why backends are not unloaded mid-session
+
+RC3 deliberately separates **soft-disable now** from **do not load next start**. RenoDX and DLSS 5 Bridge install native hooks/callbacks and own runtime state; force-unloading them from an active FiveM/ReShade process would create more crash risk than benefit. SECRET EMKO therefore idles the pipeline immediately and uses ReShade's official `DisabledAddons` mechanism so the modules are skipped on the next launch.
