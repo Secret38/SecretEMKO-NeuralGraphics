@@ -386,7 +386,44 @@ function Get-IniValue([string]$Path,[string]$Section,[string]$Key) {
     $inside = $false
     foreach ($line in Get-Content -LiteralPath $Path) {
         $trim = $line.Trim()
-        if ($trim -match '^\[(.+)\]([string]$Extracted, [string]$Name, [string]$Target, [string]$BackupRoot) {
+        if ($trim -match '^\[(.+)\]$') {
+            $inside = $Matches[1] -ieq $Section
+            continue
+        }
+        if ($inside -and $line -match ("^\s*" + [regex]::Escape($Key) + "\s*=(.*)$")) {
+            return $Matches[1].Trim()
+        }
+    }
+    return $null
+}
+
+function Ensure-IniValue([string]$Path,[string]$Section,[string]$Key,[string]$DefaultValue) {
+    if ($null -eq (Get-IniValue $Path $Section $Key)) {
+        Set-IniValue $Path $Section $Key $DefaultValue
+    }
+}
+
+function Set-BackendDisabledPolicy([string]$Path,[bool]$LoadBackends) {
+    $current = Get-IniValue $Path "ADDON" "DisabledAddons"
+    $entries = New-Object System.Collections.Generic.List[string]
+    if ($current) {
+        foreach ($raw in ($current -split ",")) {
+            $entry = $raw.Trim()
+            if (-not $entry) { continue }
+            $at = $entry.LastIndexOf("@")
+            $file = if ($at -ge 0) { $entry.Substring($at + 1).Trim() } else { "" }
+            if ($file -ieq "renodx-dlss5.addon64" -or $file -ieq "dlss5-bridge.addon64") { continue }
+            [void]$entries.Add($entry)
+        }
+    }
+    if (-not $LoadBackends) {
+        [void]$entries.Add("SECRET EMKO RenoDX backend@renodx-dlss5.addon64")
+        [void]$entries.Add("SECRET EMKO DLSS5 bridge@dlss5-bridge.addon64")
+    }
+    Set-IniValue $Path "ADDON" "DisabledAddons" ($entries -join ",")
+}
+
+function Copy-OptionalStreamlineFile([string]$Extracted, [string]$Name, [string]$Target, [string]$BackupRoot) {
     $candidates = @(Get-ChildItem -LiteralPath $Extracted -Recurse -File -Filter $Name -ErrorAction SilentlyContinue |
         Where-Object { $_.FullName -match '[\\/]bin[\\/]x64[\\/]' -and $_.FullName -notmatch '[\\/]development[\\/]' })
     if ($candidates.Count -eq 0) {
