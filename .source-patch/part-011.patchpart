@@ -1,0 +1,400 @@
++// Pass one: difference, and the hold that carries a pixel forward
++// ---------------------------------------------------------------------------
++//
++// Per channel rather than on luminance. An interface element can be a pure
++// colour shift at the same brightness - a damage tint, a selection highlight -
++// and a luminance test would miss exactly those.
++
++[numthreads(8, 8, 1)]
++void MaskDifference(uint3 id : SV_DispatchThreadID)
++{
++    if (id.x >= gResolution.x || id.y >= gResolution.y) return;
++    const uint2 p = id.xy;
++
++    const float3 hudless = gHudless[p];
++    const float3 shown   = gShown[p];
++
++    const bool touched = any(abs(shown - hudless) > gThreshold);
++
++    uint hold = gHold[p];
++    uint raw;
++
++    if (touched)
++    {
++        hold = gHoldFrames;
++        raw = 1;
++    }
++    else if (hold > 0)
++    {
++        // A blinking indicator would otherwise switch the mask on and off at
++        // its own rate, and a mask that flickers makes the edge of every
++        // element shimmer. The hold is a delay, not a memory: it runs out.
++        hold = hold - 1;
++        raw = 1;
++    }
++    else
++    {
++        raw = 0;
++    }
++
++    gHold[p] = hold;
++    gRaw[p]  = raw;
++}
++
++// ---------------------------------------------------------------------------
++// Pass two: grow, separably
++// ---------------------------------------------------------------------------
++//
++// Antialiased glyph edges change the image by less than the body of the letter,
++// so the mask ends a pixel short of the shape a reader sees. A ring of scene
++// pixels left unprocessed around each element is invisible; a fringe of
++// processed pixels around every letter is not.
++//
++// A square rather than a disc: at radius one or two the difference is a single
++// pixel at the diagonals, and the square is two linear passes instead of a
++// neighbourhood loop.
++
++[numthreads(8, 8, 1)]
++void MaskGrowHorizontal(uint3 id : SV_DispatchThreadID)
++{
++    if (id.x >= gResolution.x || id.y >= gResolution.y) return;
++
++    const int from = max(0, (int)id.x - gDilateRadius);
++    const int to   = min((int)gResolution.x - 1, (int)id.x + gDilateRadius);
++
++    uint value = 0;
++    for (int x = from; x <= to; ++x)
++    {
++        if (gRaw[uint2((uint)x, id.y)] != 0) { value = 1; break; }
++    }
++    gMask[id.xy] = value;
++}
++
++[numthreads(8, 8, 1)]
++void MaskGrowVertical(uint3 id : SV_DispatchThreadID)
++{
++    if (id.x >= gResolution.x || id.y >= gResolution.y) return;
++
++    const int from = max(0, (int)id.y - gDilateRadius);
++    const int to   = min((int)gResolution.y - 1, (int)id.y + gDilateRadius);
++
++    uint value = 0;
++    for (int y = from; y <= to; ++y)
++    {
++        if (gRaw[uint2(id.x, (uint)y)] != 0) { value = 1; break; }
++    }
++    gMask[id.xy] = value;
++}
++
++// ---------------------------------------------------------------------------
++// Compositing
++// ---------------------------------------------------------------------------
++//
++// A choice, never a blend. A partial weight here would mean a partly processed
++// letter, and a partly processed letter is a fringe - the artifact this whole
++// mechanism exists to prevent.
++
++Texture2D<float3>   gProcessed : register(t2);
++RWTexture2D<float3> gOutput    : register(u3);
++
++[numthreads(8, 8, 1)]
++void MaskComposite(uint3 id : SV_DispatchThreadID)
++{
++    if (id.x >= gResolution.x || id.y >= gResolution.y) return;
++    const uint2 p = id.xy;
++
++    gOutput[p] = gMask[p] != 0 ? gShown[p] : gProcessed[p];
++}
+diff --git a/v3/shaders/reproject_motion.hlsl b/v3/shaders/reproject_motion.hlsl
+new file mode 100644
+index 0000000..6d3a446
+--- /dev/null
++++ b/v3/shaders/reproject_motion.hlsl
+@@ -0,0 +1,99 @@
++// SECRET EMKO Neural Graphics v3 - camera motion from depth
++// Copyright (c) 2026 Secret EMKO
++// SPDX-License-Identifier: MIT
++//
++// This is a transcription of core/motion/reprojection.cpp. That file is the
++// definition and it is the one under test; this is the same arithmetic on the
++// GPU. When one changes, the other has to change with it - the tests cannot see
++// this file.
++//
++// One deliberate difference: the CPU side runs in double precision because
++// inverting a view-projection matrix with a large camera translation loses too
++// much in float32. Here the inverse arrives already computed, so single
++// precision is enough for the transform itself.
++
++cbuffer ReprojectConstants : register(b0)
++{
++    float4x4 gInvViewProjNow;
++    float4x4 gViewProjPrev;
++    float3   gCameraNow;
++    uint     gReversedZ;       // 1 = near at 1, far at 0
++    float2   gInvResolution;
++    uint2    gResolution;
++};
++
++Texture2D<float>  gDepth        : register(t0);
++RWTexture2D<float2> gMotion     : register(u0);
++RWTexture2D<float>  gBackground : register(u1);   // 1 where resolved as a direction
++
++static const float kEdge = 1e-6f;
++
++// Not the far plane itself: at the very end of the range the unprojection is at
++// its least stable, and the direction is the same anywhere along the ray.
++static const float kRayProbeDepth = 0.5f;
++
++bool IsBackground(float depth)
++{
++    return gReversedZ != 0 ? (depth <= kEdge) : (depth >= 1.0f - kEdge);
++}
++
++[numthreads(8, 8, 1)]
++void main(uint3 id : SV_DispatchThreadID)
++{
++    if (id.x >= gResolution.x || id.y >= gResolution.y)
++        return;
++
++    const int2 pixel = int2(id.xy);
++    const float depth = gDepth[pixel];
++
++    // Sample at the pixel centre. Half a pixel of offset here is half a pixel
++    // of motion error everywhere, which reads as a soft, uniform smear.
++    const float2 uv = (float2(id.xy) + 0.5f) * gInvResolution;
++    const float2 ndc = float2(uv.x * 2.0f - 1.0f, 1.0f - uv.y * 2.0f);
++
++    const bool background = IsBackground(depth);
++
++    float4 prevClip;
++    if (background)
++    {
++        // The sky is at infinity. Reprojecting it as a point would make it
++        // translate with the camera, which is wrong and shows up as the horizon
++        // sliding. As a direction (w = 0) it responds to rotation only.
++        const float4 probe = mul(float4(ndc, kRayProbeDepth, 1.0f), gInvViewProjNow);
++        if (abs(probe.w) <= kEdge)
++        {
++            gMotion[pixel] = float2(0.0f, 0.0f);
++            gBackground[pixel] = 1.0f;
++            return;
++        }
++        const float3 point = probe.xyz / probe.w;
++        const float3 direction = normalize(point - gCameraNow);
++        prevClip = mul(float4(direction, 0.0f), gViewProjPrev);
++    }
++    else
++    {
++        const float4 worldH = mul(float4(ndc, depth, 1.0f), gInvViewProjNow);
++        if (abs(worldH.w) <= kEdge)
++        {
++            gMotion[pixel] = float2(0.0f, 0.0f);
++            gBackground[pixel] = 0.0f;
++            return;
++        }
++        prevClip = mul(float4(worldH.xyz / worldH.w, 1.0f), gViewProjPrev);
++    }
++
++    if (prevClip.w <= kEdge)
++    {
++        // Behind the previous camera: there is no correct answer, and a wrong
++        // one here is a long smear. Zero, and let the validation pass flag it.
++        gMotion[pixel] = float2(0.0f, 0.0f);
++        gBackground[pixel] = background ? 1.0f : 0.0f;
++        return;
++    }
++
++    const float2 prevNdc = prevClip.xy / prevClip.w;
++    const float2 prevUv = float2(prevNdc.x * 0.5f + 0.5f, 0.5f - prevNdc.y * 0.5f);
++
++    gMotion[pixel] = prevUv - uv;
++    gBackground[pixel] = background ? 1.0f : 0.0f;
++}
+diff --git a/v3/shaders/validate_motion.hlsl b/v3/shaders/validate_motion.hlsl
+new file mode 100644
+index 0000000..f5457dc
+--- /dev/null
++++ b/v3/shaders/validate_motion.hlsl
+@@ -0,0 +1,134 @@
++// SECRET EMKO Neural Graphics v3 - checking motion vectors against the image
++// Copyright (c) 2026 Secret EMKO
++// SPDX-License-Identifier: MIT
++//
++// Companion to core/motion/confidence.cpp, which holds the thresholds and the
++// merge rule and is the part under test.
++//
++// For each pixel: sample last frame's image where the motion vector says this
++// pixel came from, and compare. A vector that did not predict the image did not
++// describe what happened, whatever produced it.
++//
++// This is what turns the most dangerous failure - a confidently wrong vector
++// from an object-identity collision - into the mildest one, a pixel we know we
++// are unsure about. It also catches the surfaces that can never have good
++// vectors: glass, particles, rain, alpha-tested foliage.
++
++cbuffer ValidateConstants : register(b0)
++{
++    float2 gInvResolution;
++    uint2  gResolution;
++    float  gRejectAbove;      // core: ValidationConfig::reject_above
++    float  gReactiveAbove;    // core: ValidationConfig::reactive_above
++    uint   gHaveGeometry;     // is the per-object layer populated at all
++    uint   gPad;
++};
++
++Texture2D<float3> gColourNow    : register(t0);
++Texture2D<float3> gColourPrev   : register(t1);
++Texture2D<float2> gCameraMotion : register(t2);   // the reprojected base layer
++Texture2D<float2> gGeometry     : register(t3);   // per-object, where it exists
++Texture2D<float>  gGeometryMask : register(t4);   // 1 where a shader wrote one
++Texture2D<float>  gBackground   : register(t5);
++
++RWTexture2D<float2> gMotionOut  : register(u0);
++RWTexture2D<float>  gReactive   : register(u1);   // reactive mask for the upscaler
++RWStructuredBuffer<uint> gTally : register(u2);   // [0] trusted [1] reactive [2] total
++
++SamplerState gLinear : register(s0);
++
++// Perceptual weighting. A difference in luminance matters more than one in
++// chroma, and using plain RGB distance makes shadow edges look like motion
++// failures.
++float Luminance(float3 colour)
++{
++    return dot(colour, float3(0.2126f, 0.7152f, 0.0722f));
++}
++
++// Compared over a small neighbourhood rather than a single texel, because one
++// texel of sampling difference is not evidence that a vector is wrong.
++float PhotometricError(float2 uv, float2 motion)
++{
++    const float2 prevUv = uv + motion;
++    if (any(prevUv < 0.0f) || any(prevUv > 1.0f))
++        return 1.0f;   // reprojected off-screen: no history, treat as unusable
++
++    float error = 0.0f;
++    [unroll]
++    for (int dy = -1; dy <= 1; ++dy)
++    {
++        [unroll]
++        for (int dx = -1; dx <= 1; ++dx)
++        {
++            const float2 offset = float2(dx, dy) * gInvResolution;
++            const float now  = Luminance(gColourNow.SampleLevel(gLinear, uv + offset, 0));
++            const float prev = Luminance(gColourPrev.SampleLevel(gLinear, prevUv + offset, 0));
++            error += abs(now - prev);
++        }
++    }
++    return saturate(error / 9.0f);
++}
++
++[numthreads(8, 8, 1)]
++void main(uint3 id : SV_DispatchThreadID)
++{
++    if (id.x >= gResolution.x || id.y >= gResolution.y)
++        return;
++
++    const int2 pixel = int2(id.xy);
++    const float2 uv = (float2(id.xy) + 0.5f) * gInvResolution;
++
++    const float2 cameraMotion = gCameraMotion[pixel];
++    const bool background = gBackground[pixel] > 0.5f;
++
++    const bool hasGeometry = gHaveGeometry != 0 && gGeometryMask[pixel] > 0.5f;
++
++    float2 chosen = cameraMotion;
++    bool fromGeometry = false;
++    bool reactive = background;
++    uint verdict = 0;   // 0 trusted, 1 reactive, 2 rejected
++
++    if (hasGeometry)
++    {
++        const float2 geometryMotion = gGeometry[pixel];
++        const float error = PhotometricError(uv, geometryMotion);
++
++        if (error >= gRejectAbove)
++        {
++            // Checked and found wrong. Fall back to the camera layer, which is
++            // at least self-consistent, and flag the pixel.
++            chosen = cameraMotion;
++            fromGeometry = false;
++            reactive = true;
++            verdict = 2;
++        }
++        else
++        {
++            chosen = geometryMotion;
++            fromGeometry = true;
++            reactive = error >= gReactiveAbove;
++            verdict = reactive ? 1 : 0;
++        }
++    }
++    else
++    {
++        // No per-object vector here - either nothing moves independently at this
++        // pixel, or the shader that drew it was never patched. Both degrade to
++        // "moves the way the world moves", which is exactly right for the first
++        // case and bounded for the second.
++        const float error = PhotometricError(uv, cameraMotion);
++        reactive = reactive || error >= gReactiveAbove;
++        verdict = error >= gRejectAbove ? 2 : (reactive ? 1 : 0);
++    }
++
++    gMotionOut[pixel] = chosen;
++    gReactive[pixel] = reactive ? 1.0f : 0.0f;
++
++    // Frame-level confidence. The generator gates on this, so it has to be
++    // counted rather than assumed.
++    if (verdict == 0)      InterlockedAdd(gTally[0], 1);
++    else if (verdict == 1) InterlockedAdd(gTally[1], 1);
++    InterlockedAdd(gTally[2], 1);
++
++    (void)fromGeometry;
++}
+diff --git a/v3/src/addon_main.cpp b/v3/src/addon_main.cpp
+new file mode 100644
+index 0000000..8fac1d2
+--- /dev/null
++++ b/v3/src/addon_main.cpp
+@@ -0,0 +1,260 @@
++/*
++ * SECRET EMKO Neural Graphics v3 - addon_main.cpp
++ * Copyright (c) 2026 Secret EMKO
++ * SPDX-License-Identifier: MIT
++ *
++ * The control add-on's entry point. Its whole job is wiring:
++ *
++ *   build the kernel -> give it probes and effectors -> tick it once per frame
++ *
++ * There is no logic here. Anything that looks like a decision in this file is a
++ * bug: decisions belong in core, observations in probes, actions in effectors.
++ */
++
++#define ImTextureID ImU64
++#define NOMINMAX
++
++#include <windows.h>
++
++#include <atomic>
++#include <memory>
++
++#include <deps/imgui/imgui.h>
++#include <include/reshade.hpp>
++
++#include "app/kernel.hpp"
++#include "effect/effectors.hpp"
++#include "platform/config_store.hpp"
++#include "platform/crash_guard.hpp"
++#include "platform/telemetry.hpp"
++#include "platform/win_paths.hpp"
++#include "probe/probes.hpp"
++#include "ui/shell.hpp"
++
++namespace {
++
++constexpr const char* kProduct = "SECRET EMKO Neural Graphics";
++constexpr const char* kVersion = "3.0.0";
++
++HMODULE g_module = nullptr;
++std::filesystem::path g_dir;
++
++std::unique_ptr<emko::app::Kernel> g_kernel;
