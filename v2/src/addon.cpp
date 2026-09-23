@@ -40,6 +40,7 @@ bool g_loaded = false;
 bool g_policy_synced = false;
 bool g_backends_next_start = true;
 bool g_backend_transition_pending = false;
+bool g_provider_restart_pending = false;
 std::string g_backend_status;
 
 struct NeuralSettings {
@@ -370,8 +371,10 @@ void WriteNeuralSettings() {
     // These legacy/provider values are persisted but are not exposed by the
     // verified RenoDX v4.70 UI callback, so SECRET EMKO never pretends that
     // they were changed live.
-    if (ProviderRestartOnlyChange(before, g_nr))
+    if (ProviderRestartOnlyChange(before, g_nr)) {
+      g_provider_restart_pending = true;
       g_restart_required = true;
+    }
   }
 
   g_saved_nr = g_nr;
@@ -405,6 +408,7 @@ void LoadNeuralSettings() {
   ReadConfig(kOwnSection, "BackendsNextStart", backends);
   g_backends_next_start = backends != 0;
   g_saved_nr = g_nr;
+  g_provider_restart_pending = false;
   g_live.set_baseline(ToLiveDesired(g_nr));
 }
 
@@ -902,11 +906,6 @@ void DrawOverlay(reshade::api::effect_runtime* runtime) {
   // drawing SECRET EMKO. This does not patch unknown RenoDX builds.
   g_live.tick(runtime);
 
-  if (!g_policy_synced) {
-    SetBackendLoadPolicy(g_nr.enabled != 0);
-    g_policy_synced = true;
-  }
-
   DrawHeader();
 
   if (ImGui::BeginTabBar("##se_tabs")) {
@@ -927,23 +926,43 @@ void DrawOverlay(reshade::api::effect_runtime* runtime) {
     const bool live_ok = g_live.tick(runtime);
     if (g_live.has_pending() || g_live.has_confirming() || (!live_ok && g_nr.enabled != 0))
       g_restart_required = true;
-    else if (live_ok && g_live.last_apply_confirmed() && !ProviderRestartOnlyChange(g_saved_nr, g_nr)) {
+    else if (live_ok && g_live.last_apply_confirmed() && !g_provider_restart_pending) {
       // Runtime-supported values have been confirmed by RenoDX's own callback.
-      // Provider-only persisted fields may still independently require restart.
       if (g_nr.enabled == 0 || NeuralBackendsLoaded())
         g_restart_required = false;
     }
   }
 }
 
+void OnOverlayFrame(reshade::api::effect_runtime* runtime) {
+  // ReShade calls this every ImGui frame, independently of which settings page
+  // is selected. That lets SECRET EMKO hide the verified RenoDX settings page
+  // and service queued live changes without requiring the user to visit it.
+  if (!g_loaded) {
+    LoadNeuralSettings();
+    LoadBridgeConfig();
+    g_loaded = true;
+  }
+
+  g_live.tick(runtime);
+
+  if (!g_policy_synced) {
+    SetBackendLoadPolicy(g_nr.enabled != 0);
+    g_policy_synced = true;
+  }
+}
+
 void Attach() {
   LoadNeuralSettings();
   LoadBridgeConfig();
+  g_loaded = true;
+  reshade::register_event<reshade::addon_event::reshade_overlay>(OnOverlayFrame);
   reshade::register_overlay(kProduct, DrawOverlay);
 }
 
 void Detach() {
   g_live.restore_provider_overlay();
+  reshade::unregister_event<reshade::addon_event::reshade_overlay>(OnOverlayFrame);
   reshade::unregister_overlay(kProduct, DrawOverlay);
 }
 
