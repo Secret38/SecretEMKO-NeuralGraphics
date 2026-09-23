@@ -213,14 +213,24 @@ void SetBackendLoadPolicy(bool load_next_start) {
   g_backends_next_start = load_next_start;
   WriteConfig(kOwnSection, "BackendsNextStart", load_next_start ? 1 : 0);
 
-  const bool loaded_now = NeuralBackendsLoaded();
-  g_backend_transition_pending = load_next_start != loaded_now;
-  if (!load_next_start && loaded_now)
-    g_backend_status = "Backends are scheduled not to load next start; current-session shutdown is being applied where verified.";
-  else if (load_next_start && !loaded_now)
-    g_backend_status = "Backends are scheduled to load on the next start.";
-  else
-    g_backend_status = load_next_start ? "Backends are loaded for this session." : "Backends are not loaded.";
+  const bool renodx_loaded = RenoDxLoaded();
+  const bool bridge_loaded = BridgeLoaded();
+  const bool chain_loaded = renodx_loaded && bridge_loaded;
+  const bool any_loaded = renodx_loaded || bridge_loaded;
+
+  g_backend_transition_pending = load_next_start != chain_loaded;
+
+  if (load_next_start && !chain_loaded) {
+    g_restart_required = true;
+    if (any_loaded)
+      g_backend_status = "Neural backend chain is only partially loaded; both RenoDX and Bridge are scheduled for the next start.";
+    else
+      g_backend_status = "Neural backends are scheduled to load on the next start.";
+  } else if (!load_next_start && any_loaded) {
+    g_backend_status = "Loaded neural backends are being soft-disabled now and are scheduled not to load next start.";
+  } else {
+    g_backend_status = load_next_start ? "RenoDX and Bridge are loaded for this session." : "Neural backends are not loaded.";
+  }
 }
 
 secretemko_live::Desired ToLiveDesired(const NeuralSettings& value) {
