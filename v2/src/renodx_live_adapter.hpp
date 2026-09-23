@@ -146,12 +146,8 @@ class RenoDxLiveAdapter {
     return false;
   }
   bool last_apply_confirmed() const {
-    if (last_applied_generation_ != pending_generation_) return false;
-    for (const auto& f : fields_) {
-      if ((f.pending || f.confirming) || (f.seen && !f.confirmed && touched_[&f - fields_.data()]))
-        return false;
-    }
-    return true;
+    return last_applied_generation_ == pending_generation_ &&
+           !has_pending() && !has_confirming();
   }
   const std::string& reason() const { return reason_; }
 
@@ -193,7 +189,6 @@ class RenoDxLiveAdapter {
   HMODULE module_ = nullptr;
   HMODULE checked_module_ = nullptr;
   const imgui_function_table* original_ = nullptr;
-  bool checked_ = false;
   bool valid_ = false;
   bool active_ = false;
   bool overlay_hidden_ = false;
@@ -227,7 +222,7 @@ class RenoDxLiveAdapter {
 
   bool hash_matches(HMODULE module) {
     wchar_t filename[32768] = {};
-    if (!GetModuleFileNameW(module, filename, static_cast<DWORD>(std::size(filename))))
+    if (!GetModuleFileNameW(module, filename, static_cast<DWORD>(_countof(filename))))
       return false;
 
     HANDLE file = CreateFileW(
@@ -298,7 +293,6 @@ class RenoDxLiveAdapter {
     module_ = module;
     if (checked_module_ != module) {
       checked_module_ = module;
-      checked_ = true;
       valid_ = hash_matches(module);
       active_ = false;
       overlay_hidden_ = false;
@@ -345,6 +339,11 @@ class RenoDxLiveAdapter {
 
       f.seen = true;
       f.current = value;
+
+      // Hidden/disabled provider controls must never be forced live. This keeps
+      // SECRET EMKO aligned with RenoDX's own availability rules.
+      if (disabled_depth_ != 0)
+        return false;
       f.min = lo;
       f.max = hi;
 
