@@ -24,6 +24,7 @@
 
 #include <deps/imgui/imgui.h>
 #include <include/reshade.hpp>
+#include <include/imgui_function_table.hpp>
 #include "renodx_live_adapter.hpp"
 
 namespace {
