@@ -1,0 +1,11 @@
+{
+  "$schema": "https://cdn.jsdelivr.net/gh/clshortfuse/renodx/renodx-metadata-schema.json",
+  "id": "secretemkofg",
+  "title": "SECRET EMKO Native Frame Generation Provider",
+  "maintainers": ["Secret EMKO"],
+  "status": "experimental",
+  "tags": ["FiveM", "GTA V Legacy", "Frame Generation", "DLSSG", "Native Motion"],
+  "deploy": {
+    "architecture": ["x64"]
+  }
+}
