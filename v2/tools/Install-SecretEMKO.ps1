@@ -427,7 +427,7 @@ function Get-SecretEmkoPersistentIniState([string]$Path) {
         foreach ($key in $keys[$section]) {
             $value = Get-IniValue $Path $section $key
             if ($null -ne $value) {
-                $state["$section::$key"] = [string]$value
+                $state[("{0}::{1}" -f $section, $key)] = [string]$value
             }
         }
     }
