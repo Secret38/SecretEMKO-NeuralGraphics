@@ -3,7 +3,7 @@
 **Modern visual and neural-rendering control system for FiveM GTA V Legacy x64.**  
 Created and maintained by **Secret EMKO** · GitHub owner: **@Secret38**
 
-Current release candidate: **v2.0.0-rc3**
+Current release candidate: **v2.0.0-rc4**
 
 > One product. One installer. One control surface.  
 > ReShade, RenoDX, DLSS 5 Bridge and NVIDIA runtimes are treated as backend technologies where required — the user-facing product is **SECRET EMKO Neural Graphics**.
@@ -35,6 +35,8 @@ Adds:
 - verified RenoDX DLSS 5 neural backend
 - DLSS 5 Bridge backend for FiveM GTA V Legacy D3D11
 - pinned and verified NVIDIA DLSS Neural Rendering / DLSS SR runtimes
+- internal NVIDIA Optical Flow motion guidance on the synthetic path (no separate motion-vector shader required by default)
+- automatic DLSS SR runtime preparation for FiveM's dynamic GTA subprocess; no manual cache-folder DLL copy
 - live neural parameter control where the verified backend exposes it
 - persistent backend load policy between launches
 
@@ -53,7 +55,7 @@ The source archive intentionally does not contain the compiled native add-ons.
 Download the latest successful GitHub Actions artifact named:
 
 ```text
-SecretEMKO-NeuralGraphics-v2.0.0-rc3
+SecretEMKO-NeuralGraphics-v2.0.0-rc4
 ```
 
 Then:
@@ -115,6 +117,8 @@ Supported RenoDX settings are applied through the verified provider's own settin
 
 Bridge settings are written to `dlss5-bridge.cfg`; the bridge re-reads its configuration while the game is running.
 
+RC4 pins DLSS 5 Bridge `v1.4.13-pre8` because its synthetic path can generate motion guidance with NVIDIA Optical Flow (`ofa_grid=1/2/4`). SECRET EMKO preloads the pinned `nvngx_dlss.dll` from the managed plugins directory and relays it only into FiveM's disposable `data\\cache\\subprocess` host when NGX requires an executable-local SR snippet. The UI now distinguishes **installed**, **armed**, **blocked** and **active**; file presence alone is not reported as proof of Neural Rendering.
+
 Persistent state is stored in:
 
 ```text
@@ -134,7 +138,7 @@ Native third-party add-ons are intentionally **not force-unloaded with FreeLibra
 
 ## Compatibility boundaries
 
-Current RC3 target:
+Current RC4 target:
 
 ```text
 FiveM
