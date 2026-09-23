@@ -40,6 +40,7 @@ std::filesystem::path g_dir;
 bool g_restart_required = false;
 bool g_loaded = false;
 bool g_policy_synced = false;
+bool g_temporal_policy_synced = false;
 bool g_backends_next_start = true;
 bool g_backend_transition_pending = false;
 bool g_provider_restart_pending = false;
@@ -843,6 +844,38 @@ void ApplyCompatibilityMotionPath() {
   PersistFrameGenerationSettings();
 }
 
+void EnsureTemporalPolicy() {
+  if (g_temporal_policy_synced) return;
+
+  const int requested_motion = g_motion_path;
+  const int requested_fg = g_fg_policy;
+
+  if (requested_fg != 0) {
+    if (!ApplyNativeFrameGenPath(requested_fg)) {
+      // Stale config or provider regression: fail closed, restore the known
+      // compatibility path and never present a saved 2x/3x selection as active.
+      ApplyCompatibilityMotionPath();
+      if (requested_motion == 0) {
+        g_motion_path = 0;
+        PersistFrameGenerationSettings();
+      }
+      g_backend_status = "Saved Frame Generation state was rejected because verified GTA shader-motion/HUD inputs are not ready.";
+    }
+  } else if (requested_motion == 2 && NativeMotionReady()) {
+    g_bridge.synth = 0;
+    g_bridge.source = 3;
+    WriteBridgeConfig(true);
+  } else {
+    ApplyCompatibilityMotionPath();
+    if (requested_motion == 0) {
+      g_motion_path = 0;
+      PersistFrameGenerationSettings();
+    }
+  }
+
+  g_temporal_policy_synced = true;
+}
+
 bool ApplyNativeFrameGenPath(int policy) {
   policy = std::clamp(policy, 0, 2);
   if (policy == 0) {
@@ -1499,6 +1532,24 @@ void DrawDiagnostics() {
   }
 
   ImGui::Spacing();
+  ImGui::SeparatorText("GTA shader-motion / Frame Gen provider");
+  FgProviderStatusV1 fg_status{};
+  if (QueryFrameGenProvider(fg_status)) {
+    ImGui::Text("Provider ABI: %u  |  frames observed: %llu",
+                fg_status.abi, static_cast<unsigned long long>(fg_status.presented_frames));
+    ImGui::BulletText("D3D11 observed: %s", (fg_status.flags & kFgD3D11Observed) ? "yes" : "no");
+    ImGui::BulletText("Depth activity: %s", (fg_status.flags & kFgDepthObserved) ? "yes" : "no");
+    ImGui::BulletText("Render-target activity: %s", (fg_status.flags & kFgRenderTargetSeen) ? "yes" : "no");
+    ImGui::BulletText("GTA shader motion: %s", (fg_status.flags & kFgNativeMotionReady) ? "ready" : "discovery");
+    ImGui::BulletText("HUD-less color: %s", (fg_status.flags & kFgHudlessReady) ? "ready" : "discovery");
+    ImGui::BulletText("UI input: %s", (fg_status.flags & kFgUiReady) ? "ready" : "discovery");
+    ImGui::BulletText("Frame Generation: %s", (fg_status.flags & kFgFrameGenReady) ? "ready" : "locked");
+    ImGui::BulletText("Shared NR contract: %s", (fg_status.flags & kFgNrSharedReady) ? "ready" : "not ready");
+  } else {
+    ImGui::TextDisabled("Native provider status unavailable.");
+  }
+
+  ImGui::Spacing();
   ImGui::SeparatorText("Synthetic runtime bootstrap");
   ImGui::Text("Plugin SR runtime: %s", g_sr_runtime_source_ready ? "present" : "missing");
   ImGui::Text("SR module preloaded: %s", g_sr_runtime_module_ready ? "yes" : "no");
@@ -1551,6 +1602,7 @@ void DrawOverlay(reshade::api::effect_runtime* runtime) {
     LoadBridgeConfig();
     g_loaded = true;
   }
+  EnsureTemporalPolicy();
 
   // Validate/hide the RenoDX backend page and discover its live controls before
   // drawing SECRET EMKO. This does not patch unknown RenoDX builds.
@@ -1597,6 +1649,7 @@ void OnOverlayFrame(reshade::api::effect_runtime* runtime) {
     LoadBridgeConfig();
     g_loaded = true;
   }
+  EnsureTemporalPolicy();
 
   g_live.tick(runtime);
 
