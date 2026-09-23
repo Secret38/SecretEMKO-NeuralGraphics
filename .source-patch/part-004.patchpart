@@ -1,0 +1,279 @@
++game, caused by a diagnostic.
++
++The pointer cannot be tested beforehand. The copy is now guarded by a structured
++exception handler around a single bounded `memcpy` with nothing to unwind, and
++the data is copied into our own buffer before anything downstream sees it. This
++is the only place in the codebase that uses that tool, and it is the right one.
++
++### The rest
++
++| Risk | What happens |
++|---|---|
++| Resolution or window change | aspect change resets the detector; a lock made against the old shape is not kept |
++| Camera cut, respawn, cutscene | continuity restarts, the candidate is not discredited |
++| Loading screen with no camera | `LOST` is reported, and does not decay into `SEARCHING` |
++| Long stall, alt-tab | the limiter re-anchors instead of emitting a burst of catch-up frames |
++| Deferred contexts accumulating | `destroy_command_list` is handled; v2 leaked these |
++| Partial buffer writes | stale bytes fail the camera tests; nothing downstream sees them |
++| Torn read of shared state | seqlock on both the command and camera blocks, reader retries |
++| Mismatched telemetry version | the block is refused rather than reinterpreted |
++
++The architectural point: **nothing in this pipeline reports success it has not
++earned.** A component that loses its footing reports that, and the features
++above it decline rather than running on data they cannot vouch for.
++
++---
++
++## 4. Visible quality
++
++### Where quality actually comes from
++
++In order of how much each is worth:
++
++1. **Correct motion vectors.** Everything else is secondary. This is why the
++   reprojection base layer exists, why per-object motion overrides it rather
++   than replacing it, and why estimated motion is never accepted for generated
++   frames.
++2. **Not fighting another temporal system.** Two accumulators on the same frames
++   produce smearing neither is responsible for. Already enforced between the
++   motion paths; the same rule has to extend to the game's own temporal AA when
++   upscaling arrives.
++3. **The interface out of the pipeline.** Anything generated over the top of the
++   HUD is an artifact by definition.
++4. **Knowing what you cannot trust.** The reactive mask is what keeps glass,
++   particles, rain and alpha-tested foliage from being treated as if they had a
++   single depth and a single motion.
++
++### The quality position today
++
++The image pass runs on camera-reprojected motion instead of optical flow. For
++the static world that is not an approximation — it is exact, and optical flow
++never was. For traffic and pedestrians it is worse than optical flow, which at
++least sees them, and that is why the hybrid exists: reprojection as the base,
++estimation filling in only where reprojection is blind.
++
++So the honest claim is **better on most of the frame, with a known weakness on
++independent movers, and a defined path to fixing it** — not "better everywhere".
++
++### What the tiers cost
++
++Dropping the validation pass to half or quarter resolution coarsens the
++confidence mask. The effect is slightly softer handling at the edges of moving
++objects and around transparency. It does not affect the motion vectors
++themselves, which stay per-pixel. That is why it is the first thing given up and
++frames are the last.
++
++---
++
++## Summary
++
++| Axis | Today | When generation lands |
++|---|---|---|
++| Latency | unchanged; limiter may improve it | +14 ms at 2x, +21 ms at 3x — stated in the interface |
++| Performance | detection ~0.1% of the naive cost, stops after lock | governed; quality degrades before frames do |
++| Stability | driver-memory read guarded, every loss path reports itself | interop is the main new risk; repro harness first |
++| Quality | exact for the static world, weak on movers, hybrid covers the gap | per-object motion closes it |
++
++The one thing this document will not claim is that generated frames are free.
++They cost latency, the cost is inherent, and the number belongs on screen next
++to the button that switches them on.
++
++---
++
++# The second pass
++
++Added after the question "is two-pass literally doing it twice, and can there be
++something in between?" — which turns out to be the right question, because the
++usual answer to both is wrong.
++
++## Why the two-pass look is real
++
++People report that two passes look *more real*, and they are not imagining it.
++Two separate things happen when a model runs on its own output:
++
++**The footprint widens.** One evaluation only sees a limited neighbourhood
++around each pixel. A second sees a neighbourhood of neighbourhoods, so structure
++on a larger scale gets treated — how light settles across a wall, not just how
++one brick edge looks. There is no single-pass setting that produces this. It is
++a receptive-field effect, and it is the part people recognise.
++
++**Nothing is pushed as hard.** Two gentle evaluations both stay inside the range
++the model handles well. One hard evaluation leaves it, and leaving it is what
++produces halos and the plasticky sheen.
++
++And one thing that goes wrong:
++
++**High frequencies feed back.** The second pass does not see the game's frame,
++it sees the first pass's output — which the model was never trained on. Fine
++detail the first pass got slightly wrong is real content as far as the second is
++concerned, so it gets sharpened, written into temporal history, and amplified.
++This is where two-pass setups actually fail in practice.
++
++The two good effects live at low spatial frequencies. The bad one lives at high
++spatial frequencies. They are separable, so this implementation separates them.
++
++## What is built
++
++**A continuous dial, 1.00 to 2.00.** Above 1.00 the second pass runs and its
++result is mixed in at that weight. 1.35 is a real position, not a rounded-down
++1. That is the "somewhere between one and two" the question asked for, and it is
++a blend weight rather than a fractional evaluation — you cannot run 35% of a
++neural network, but you can run all of it and use 35% of the answer.
++
++**The strength is solved for the mix, not halved.** Treating the effect as
++compounding, one evaluation at `j` takes the picture to `(1 + j)`; mixing the
++second in at weight `f` lands at `(1 + j)(1 + f·j)`. Setting that equal to the
++requested `(1 + i)` gives
++
++```
++f·j² + (1 + f)·j − i = 0
++```
++
++with exactly one non-negative root. At `f = 1` it reduces to the familiar
++`sqrt(1 + i) − 1`; at `f = 0` it reduces to `j = i`. So the dial is continuous at
++both ends and every position on it delivers the strength the player asked for.
++Getting this wrong — halving, or sending the full value twice — is why partial
++second passes normally come out either weak or overdriven. `test_passes.cpp`
++asserts the round-trip across the whole grid.
++
++**The cheap second pass blends a correction, not an image.** Under load the
++second evaluation moves to half resolution and contributes only its *difference*
++from its own input. Blending the half-resolution image would soften what the
++first pass resolved; blending its correction cannot, because the correction has
++nothing above the half-resolution band in it. So the widened footprint arrives
++and the feedback of fine detail does not, at roughly a third of the cost. On the
++axis people actually notice, this is not the inferior option — it is the safer
++one.
++
++**The cost does not scale with the dial, and the interface says so.** Mixing in
++20% still runs the whole pass. A slider that implied otherwise would be lying
++about what it costs.
++
++## Where it sits in the degrade ladder
++
++```
++motion mask detail  →  second pass to half res  →  second pass off  →  3x → 2x  →  off
++```
++
++Shrinking before removing is not a formality. At half resolution the second pass
++keeps the widened footprint — the reason anyone asked for it — and gives up only
++fine detail it should not have been touching. Removing it gives up the look
++entirely. Those are not the same size of loss, so they are not the same rung.
++
++Whatever the governor does, the requested *strength* is never reduced: dropping
++to one pass returns the full value to that pass. The picture does not get weaker
++when the machine gets busier, it gets less gently arrived at.
++
++## Video memory
++
++A second evaluation needs its own temporal history, and the history is the
++expensive part — several full-resolution buffers held across frames. This is the
++one part of the product that costs meaningful memory rather than meaningful
++time.
++
++The answer is not to predict the size. A prediction that is 30% low produces
++exactly the failure it was meant to prevent: an allocation that succeeds, pushes
++the adapter past its budget, and turns into stutter that looks like a driver
++problem. So there are two measurements and one live rule:
++
++- **Before.** `IDXGIAdapter3::QueryVideoMemoryInfo` reports a per-process budget
++  and current usage. The difference is genuinely how much room there is — it
++  already accounts for every other application on the machine, which no
++  prediction can. A conservative 640 MB placeholder is used only until there is
++  something real to measure, and 384 MB of headroom is left for the game, which
++  allocates on its own schedule and does not know we are here.
++- **After.** The instance's real size is the usage delta across creating it.
++  From that moment there is no estimate left in the decision and the interface
++  prints a measured number.
++- **Live.** If usage reaches 96% of the budget, the second instance goes
++  immediately, without waiting for the time-based governor. Being at the edge of
++  the budget means the driver is about to start moving allocations across the
++  bus, and every frame spent deciding is a frame spent stuttering.
++
++Which adapter is asked matters: reading adapter zero on a laptop can mean
++reading the integrated GPU while the game renders on the discrete one. The
++render device's LUID is used when it is known, and the status line says which of
++the two happened rather than quietly guessing.
++
++On a 16 GB card this is a non-question — which matches the expectation that VRAM
++is not the binding constraint. The accounting exists so that it is still not a
++question on an 8 GB card with a browser open, and so the number on screen is
++read rather than invented.
++
++## What it still will not do
++
++Two evaluations need two independent feature instances. Sharing one history
++means feeding that history its own output, which drifts. No provider reachable
++from here exposes that today, so the dial reports inert instead of pretending —
++and the Graphics page says which of the three reasons applies (no capability, no
++memory, no budget) rather than looking broken. Same rule as everything else in
++this product.
+diff --git a/v3/docs/COMPLETION.md b/v3/docs/COMPLETION.md
+new file mode 100644
+index 0000000..972a9ad
+--- /dev/null
++++ b/v3/docs/COMPLETION.md
+@@ -0,0 +1,219 @@
++# What is finished, what is not, and what the rest needs
++
++This document exists because "is it done" deserves a real answer rather than a
++version number. The product's own rule is that a thing claims only what it has
++proven; the same rule applies to the project.
++
++Read the middle column as strictly as the status badges in the interface.
++
++---
++
++## The decision layer — finished
++
++Everything here is portable C++20 with no Windows, no GPU and no SDK. It builds
++and runs anywhere, and 276 assertions run against it in about a second.
++
++| Area | State |
++|---|---|
++| Capability graph, evidence ledger, TTL decay | **Done.** Nothing can reach ACTIVE without fresh liveness. |
++| Intent → Planner → Plan, pure and total | **Done.** |
++| Look model, strength response curves | **Done.** |
++| Temporal arbitration, motion source rules | **Done.** |
++| Camera discovery, matrix inversion, reprojection | **Done**, tested against synthetic drives with decoy matrices. |
++| Budget governor, degrade ladder, latency model | **Done.** |
++| Pass model — the 1.00–2.00 dial, split solving, half-res delta | **Done.** |
++| Video memory accounting | **Done.** |
++| Per-material model — `semantic.hpp` | **Done.** |
++| Backend contract — `backend.hpp` | **Done.** |
++| Draw classification and frame segmentation | **Done.** |
++| Overlay coverage model | **Done.** |
++| Material catalogue and its file format | **Done.** |
++
++| Recorded decisions across a grid of situations | **Done.** |
++
++This half is genuinely finished in the sense that matters: it is the part where
++being wrong is silent, and it is the part that is checked.
++
++`tests/golden/plans.txt` holds the whole decision for ten situations - a fresh
++install, the tuned personal setup, a second pass with and without a capable
++provider, skin identified, the governor under load, safe mode, frames refused
++for want of motion. Change a rule and the diff names which situations moved.
++That is either the change that was intended, in which case the recording is
++updated deliberately with `EMKO_UPDATE_GOLDEN=1`, or it is the one that was not.
++
++This matters more from here than it did before: the next phase is *run it, find
++things, change code*, and that is exactly the phase where a threshold moved for
++one reason quietly changes what happens in a case nobody was looking at.
++
++---
++
++## The Windows layer — partly built, none of it run
++
++Everything below compiles only on Windows against the ReShade, RenoDX and
++Windows SDKs. **None of it has been executed.** It is type-checked against stub
++headers, which catches wrong names and wrong signatures and catches nothing
++else. A stub is written from the same understanding as the code it checks, so
++where that understanding is wrong, both are wrong together — which is exactly
++what a first run on a real machine is for.
++
++| Area | State |
++|---|---|
++| Add-on lifecycle, ReShade registration | Written, unrun |
++| Telemetry block, config store, journal | Written, unrun |
++| Probes and effectors | Written, unrun |
