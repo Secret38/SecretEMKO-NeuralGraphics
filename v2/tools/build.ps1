@@ -101,6 +101,7 @@ Copy-Item (Join-Path $RepoRoot "presets\Secret_Emko_Main.ini") (Join-Path $stage
 Copy-Item (Join-Path $RepoRoot "presets\Secret_Emko_Stream.ini") (Join-Path $stage "presets\Secret_Emko_Stream.ini") -Force
 Copy-Item (Join-Path $RepoRoot "MAIN-SYSTEM.json") (Join-Path $stage "MAIN-SYSTEM.json") -Force
 Copy-Item (Join-Path $RepoRoot "COMPATIBILITY.md") (Join-Path $stage "COMPATIBILITY.md") -Force
+Copy-Item (Join-Path $RepoRoot "FRAMEGEN-NATIVE.md") (Join-Path $stage "FRAMEGEN-NATIVE.md") -Force
 Copy-Item (Join-Path $RepoRoot "tools\Uninstall-SecretEMKO.ps1") (Join-Path $stage "tools\Uninstall-SecretEMKO.ps1") -Force
 Copy-Item (Join-Path $RepoRoot "INSTALL_SECRET_EMKO.bat") (Join-Path $stage "INSTALL_SECRET_EMKO.bat") -Force
 Copy-Item (Join-Path $RepoRoot "INSTALL_SECRET_EMKO_FULL_NEURAL.bat") (Join-Path $stage "INSTALL_SECRET_EMKO_FULL_NEURAL.bat") -Force
